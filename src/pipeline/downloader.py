@@ -2,7 +2,11 @@
 
 Ties together scraper and converter to produce markdown files
 from all Phase 1 sources. Each source is downloaded, converted
-to markdown, and saved to data/markdown/{source_id}.md.
+to markdown, and saved to data/markdown/.
+
+For HTML sources (Scrapy), the spider may produce multiple pages,
+each saved as a separate markdown file: {source_id}_{page:04d}.md.
+For PDF sources, a single markdown file is produced: {source_id}.md.
 
 The pipeline is idempotent: existing markdown files are skipped
 unless force=True.
@@ -13,13 +17,32 @@ Reference: SPEC-01.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from src.config import Settings
 from src.models import DownloadResult, SourceConfig
-from src.pipeline.converter import convert_file_to_markdown, format_text_as_markdown
-from src.pipeline.scraper import download_raw
+from src.pipeline.converter import convert_file_to_markdown
+from src.pipeline.scraper import crawl_html, download_pdf
 
 logger = logging.getLogger(__name__)
+
+
+async def _convert_single_file(
+    raw_path: Path, md_path: Path
+) -> str:
+    """Convert a single raw file to markdown and save it.
+
+    Args:
+        raw_path: Path to raw HTML or PDF file.
+        md_path: Path to write the markdown output.
+
+    Returns:
+        The markdown content.
+    """
+    markdown = convert_file_to_markdown(raw_path)
+    md_path.write_text(markdown, encoding="utf-8")
+    logger.info("Saved markdown: %s (%d chars)", md_path.name, len(markdown))
+    return markdown
 
 
 async def download_and_convert(
@@ -29,11 +52,9 @@ async def download_and_convert(
 ) -> DownloadResult:
     """Download and convert a single source to markdown.
 
-    Flow:
-    1. Check if markdown already exists (skip if not force).
-    2. Download raw content to data/raw/.
-    3. Convert to markdown using Docling (PDF/HTML) or format API text.
-    4. Save markdown to data/markdown/{source_id}.md.
+    For Scrapy HTML sources, the spider crawls multiple pages and each
+    is converted to a separate markdown file. For PDF sources, a single
+    file is produced.
 
     Args:
         source: Source configuration.
@@ -48,6 +69,124 @@ async def download_and_convert(
     raw_dir.mkdir(parents=True, exist_ok=True)
     md_dir.mkdir(parents=True, exist_ok=True)
 
+    if source.scraping_method == "scrapy":
+        return await _download_and_convert_html(source, raw_dir, md_dir, force)
+
+    return await _download_and_convert_pdf(source, raw_dir, md_dir, force)
+
+
+async def _download_and_convert_html(
+    source: SourceConfig,
+    raw_dir: Path,
+    md_dir: Path,
+    force: bool,
+) -> DownloadResult:
+    """Download and convert an HTML source with Scrapy spider.
+
+    Produces one markdown file per crawled page.
+
+    Args:
+        source: Source configuration.
+        raw_dir: Directory for raw HTML files.
+        md_dir: Directory for markdown output.
+        force: If True, re-crawl even if markdown exists.
+
+    Returns:
+        DownloadResult with aggregated stats.
+    """
+    # Check if any pages already exist for this source
+    existing = sorted(md_dir.glob(f"{source.source_id}_*.md"))
+    if existing and not force:
+        total_chars = sum(
+            len(p.read_text(encoding="utf-8")) for p in existing
+        )
+        logger.info(
+            "Skipping %s (%d pages already exist, %d chars)",
+            source.source_id,
+            len(existing),
+            total_chars,
+        )
+        return DownloadResult(
+            source_id=source.source_id,
+            success=True,
+            markdown_path=str(existing[0]),
+            char_count=total_chars,
+        )
+
+    # Step 1: Crawl with Scrapy spider
+    try:
+        raw_paths = await crawl_html(source, raw_dir)
+    except Exception as e:
+        logger.error(
+            "Crawl failed for %s: %s", source.source_id, e, exc_info=True
+        )
+        return DownloadResult(
+            source_id=source.source_id,
+            success=False,
+            error_message=f"Crawl failed: {e}",
+        )
+
+    if not raw_paths:
+        return DownloadResult(
+            source_id=source.source_id,
+            success=False,
+            error_message="Spider produced no pages",
+        )
+
+    # Step 2: Convert each page to markdown
+    total_chars = 0
+    first_md_path: str | None = None
+
+    for raw_path in raw_paths:
+        # Derive markdown filename from raw filename
+        md_name = raw_path.stem + ".md"
+        md_path = md_dir / md_name
+
+        try:
+            markdown = await _convert_single_file(raw_path, md_path)
+            total_chars += len(markdown)
+            if first_md_path is None:
+                first_md_path = str(md_path)
+        except Exception as e:
+            logger.error(
+                "Conversion failed for %s: %s", raw_path.name, e, exc_info=True
+            )
+
+    if total_chars == 0:
+        return DownloadResult(
+            source_id=source.source_id,
+            success=False,
+            error_message="All page conversions failed",
+        )
+
+    return DownloadResult(
+        source_id=source.source_id,
+        success=True,
+        markdown_path=first_md_path,
+        raw_path=str(raw_paths[0]),
+        char_count=total_chars,
+    )
+
+
+async def _download_and_convert_pdf(
+    source: SourceConfig,
+    raw_dir: Path,
+    md_dir: Path,
+    force: bool,
+) -> DownloadResult:
+    """Download and convert a PDF source.
+
+    Produces a single markdown file: {source_id}.md.
+
+    Args:
+        source: Source configuration.
+        raw_dir: Directory for raw PDF files.
+        md_dir: Directory for markdown output.
+        force: If True, re-download even if markdown exists.
+
+    Returns:
+        DownloadResult with file paths.
+    """
     md_path = md_dir / f"{source.source_id}.md"
 
     # Skip if already exists and not forcing
@@ -65,11 +204,13 @@ async def download_and_convert(
             char_count=char_count,
         )
 
-    # Step 1: Download raw content
+    # Step 1: Download PDF
     try:
-        raw_path = await download_raw(source, raw_dir, settings)
+        raw_path = await download_pdf(source, raw_dir)
     except Exception as e:
-        logger.error("Download failed for %s: %s", source.source_id, e, exc_info=True)
+        logger.error(
+            "Download failed for %s: %s", source.source_id, e, exc_info=True
+        )
         return DownloadResult(
             source_id=source.source_id,
             success=False,
@@ -85,17 +226,7 @@ async def download_and_convert(
 
     # Step 2: Convert to markdown
     try:
-        if raw_path.suffix in (".pdf", ".html", ".htm"):
-            markdown = convert_file_to_markdown(raw_path)
-        else:
-            # API/text content -- wrap in markdown format
-            raw_text = raw_path.read_text(encoding="utf-8")
-            markdown = format_text_as_markdown(
-                content=raw_text,
-                title=source.title,
-                source_id=source.source_id,
-                url=source.url,
-            )
+        markdown = await _convert_single_file(raw_path, md_path)
     except Exception as e:
         logger.error(
             "Conversion failed for %s: %s", source.source_id, e, exc_info=True
@@ -106,12 +237,6 @@ async def download_and_convert(
             raw_path=str(raw_path),
             error_message=f"Conversion failed: {e}",
         )
-
-    # Step 3: Save markdown
-    md_path.write_text(markdown, encoding="utf-8")
-    logger.info(
-        "Saved markdown: %s (%d chars)", md_path.name, len(markdown)
-    )
 
     return DownloadResult(
         source_id=source.source_id,

@@ -9,63 +9,6 @@ Reference: SPEC-01, Section 1 and Section 4.
 from src.models import SourceConfig
 
 PHASE_1_SOURCES: list[SourceConfig] = [
-    # --- API Sources ---
-    SourceConfig(
-        source_id="pubmed-amr",
-        title="PubMed AMR Research",
-        url="https://eutils.ncbi.nlm.nih.gov/entrez/eutils/",
-        organisation="NCBI",
-        scraping_method="REST_API",
-        expertise_level="advanced",
-        content_category="data",
-        document_format="api",
-        authority_tier=2,
-        api_key_required=False,  # optional, raises rate limit
-    ),
-    SourceConfig(
-        source_id="who-glass",
-        title="WHO GLASS AMR Data",
-        url="https://data.who.int/dashboards/amr/",
-        organisation="WHO",
-        scraping_method="REST_API",
-        expertise_level="intermediate",
-        content_category="data",
-        document_format="api",
-        authority_tier=1,
-    ),
-    SourceConfig(
-        source_id="card-mcmaster",
-        title="CARD - Comprehensive Antibiotic Resistance Database",
-        url="https://card.mcmaster.ca/download",
-        organisation="McMaster University",
-        scraping_method="direct_download",
-        expertise_level="advanced",
-        content_category="data",
-        document_format="json",
-        authority_tier=2,
-    ),
-    SourceConfig(
-        source_id="owid-antibiotics",
-        title="Our World in Data - Antibiotic Use & Resistance",
-        url="https://github.com/owid/owid-datasets",
-        organisation="Our World in Data",
-        scraping_method="GitHub_API",
-        expertise_level="beginner",
-        content_category="data",
-        document_format="csv",
-        authority_tier=3,
-    ),
-    SourceConfig(
-        source_id="ncbi-ndaro",
-        title="NCBI National Database of Antibiotic Resistant Organisms",
-        url="Genome Language Models (gLMs) or Gene-LLMs, u",
-        organisation="NCBI",
-        scraping_method="REST_API",
-        expertise_level="advanced",
-        content_category="data",
-        document_format="api",
-        authority_tier=1,
-    ),
     # --- Static HTML Sources ---
     SourceConfig(
         source_id="who-amr-topics",
@@ -77,6 +20,7 @@ PHASE_1_SOURCES: list[SourceConfig] = [
         content_category="learning",
         document_format="html",
         authority_tier=1,
+        crawl_depth=2,
     ),
     SourceConfig(
         source_id="cdc-amr-hub",
@@ -88,6 +32,7 @@ PHASE_1_SOURCES: list[SourceConfig] = [
         content_category="learning",
         document_format="html",
         authority_tier=1,
+        crawl_depth=2,
     ),
     SourceConfig(
         source_id="fao-amr",
@@ -99,6 +44,7 @@ PHASE_1_SOURCES: list[SourceConfig] = [
         content_category="learning",
         document_format="html",
         authority_tier=1,
+        crawl_depth=2,
     ),
     SourceConfig(
         source_id="uk-amr-plan",
@@ -110,6 +56,7 @@ PHASE_1_SOURCES: list[SourceConfig] = [
         content_category="action_plan",
         document_format="html",
         authority_tier=1,
+        crawl_depth=2,
     ),
     SourceConfig(
         source_id="lancet-gram-pmc",
@@ -121,6 +68,7 @@ PHASE_1_SOURCES: list[SourceConfig] = [
         content_category="impact",
         document_format="html",
         authority_tier=2,
+        crawl_depth=2,
     ),
     # --- PDF Sources ---
     SourceConfig(

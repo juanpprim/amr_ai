@@ -58,6 +58,10 @@ class SourceConfig(BaseModel):
     api_key_required: bool = Field(
         default=False, description="Whether an API key is needed"
     )
+    crawl_depth: int = Field(
+        default=1,
+        description="Scrapy crawl depth (1=start page only, 2=follow links one level)",
+    )
 
 
 class RawDocument(BaseModel):
