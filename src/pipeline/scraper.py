@@ -46,7 +46,7 @@ class AMRSpider(scrapy.Spider):
     """Generic spider that crawls a source URL to configurable depth.
 
     Follows links from the start URL, filtering subpages by AMR keywords.
-    Skips PDF links and pages outside the source domain.
+    Downloads linked PDFs and saves pages outside the source domain.
     """
 
     name = "amr_spider"
@@ -90,11 +90,12 @@ class AMRSpider(scrapy.Spider):
             url = response.urljoin(href)
             if not url.startswith("http"):
                 continue
-            if url.lower().endswith(".pdf"):
-                continue
             if urlparse(url).netloc not in self.allowed_domains:
                 continue
-            yield response.follow(href, callback=self.parse_subpage)
+            if url.lower().endswith(".pdf"):
+                yield response.follow(href, callback=self._save_pdf)
+            else:
+                yield response.follow(href, callback=self.parse_subpage)
 
     def parse_subpage(self, response: scrapy.http.Response) -> None:
         """Parse a subpage, saving only if it contains AMR keywords."""
@@ -106,13 +107,32 @@ class AMRSpider(scrapy.Spider):
                 "Skipping %s (no AMR keywords found)", response.url
             )
 
+    def _slug_from_response(self, response: scrapy.http.Response) -> str:
+        """Derive a filesystem-safe slug from URL path, falling back to title."""
+        slug = urlparse(response.url).path.strip("/").split("/")[-1]
+        if not slug or slug == "index.html":
+            slug = response.css("title::text").get() or "index"
+        slug = re.sub(r"[^\w\-]", "_", slug.strip().lower())[:80]
+        return slug
+
     def _save_page(self, response: scrapy.http.Response) -> None:
         """Save response body as an HTML file."""
         self.page_count += 1
-        filename = f"{self.source_id}_{self.page_count:04d}.html"
+        slug = self._slug_from_response(response)
+        filename = f"{self.source_id}_{self.page_count:04d}_{slug}.html"
         path = self.output_dir / filename
         path.write_bytes(response.body)
         logger.info("Saved page: %s (%d bytes)", filename, len(response.body))
+
+    def _save_pdf(self, response: scrapy.http.Response) -> None:
+        """Save a linked PDF to disk for later markdown conversion."""
+        self.page_count += 1
+        slug = self._slug_from_response(response)
+        slug = slug.removesuffix("_pdf")
+        filename = f"{self.source_id}_{self.page_count:04d}_{slug}.pdf"
+        path = self.output_dir / filename
+        path.write_bytes(response.body)
+        logger.info("Saved PDF: %s (%d bytes)", filename, len(response.body))
 
 
 def _run_spider_subprocess(source_json: str, output_dir: str) -> None:
@@ -130,17 +150,18 @@ def _run_spider_subprocess(source_json: str, output_dir: str) -> None:
 
 
 async def crawl_html(source: SourceConfig, raw_dir: Path) -> list[Path]:
-    """Run Scrapy spider in a subprocess and return list of saved HTML paths.
+    """Run Scrapy spider in a subprocess and return saved file paths.
 
     Uses a subprocess because Scrapy's Twisted reactor cannot coexist
-    with asyncio in the same process.
+    with asyncio in the same process. Returns both HTML pages and any
+    PDFs discovered during the crawl.
 
     Args:
         source: Source configuration with crawl_depth.
-        raw_dir: Directory to save raw HTML files.
+        raw_dir: Directory to save raw HTML/PDF files.
 
     Returns:
-        List of paths to saved HTML files.
+        List of paths to saved HTML and PDF files.
     """
     raw_dir.mkdir(parents=True, exist_ok=True)
     source_json = source.model_dump_json()
@@ -179,9 +200,11 @@ async def crawl_html(source: SourceConfig, raw_dir: Path) -> list[Path]:
         )
         return []
 
-    # Collect all HTML files written by the spider
-    pattern = f"{source.source_id}_*.html"
-    pages = sorted(raw_dir.glob(pattern))
+    # Collect all HTML and PDF files written by the spider
+    pages = sorted(
+        p for p in raw_dir.glob(f"{source.source_id}_*")
+        if p.suffix in (".html", ".pdf")
+    )
 
     if not pages:
         logger.warning("Spider produced no pages for %s", source.source_id)
