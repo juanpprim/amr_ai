@@ -56,7 +56,7 @@ class AMRSpider(scrapy.Spider):
         "ROBOTSTXT_OBEY": True,
         "DOWNLOAD_DELAY": RATE_LIMIT_DELAY,
         "USER_AGENT": USER_AGENT,
-        "LOG_LEVEL": "WARNING",
+        "LOG_LEVEL": "INFO",
         "REQUEST_FINGERPRINTER_IMPLEMENTATION": "2.7",
         "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
     }
@@ -158,14 +158,24 @@ async def crawl_html(source: SourceConfig, raw_dir: Path) -> list[Path]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+
+    # Stream spider stderr to logger in real-time
+    assert proc.stderr is not None
+    stderr_lines: list[str] = []
+    async for raw_line in proc.stderr:
+        line = raw_line.decode(errors="replace").rstrip()
+        stderr_lines.append(line)
+        logger.info("[spider:%s] %s", source.source_id, line)
+
+    await proc.wait()
 
     if proc.returncode != 0:
+        tail = "\n".join(stderr_lines[-20:])
         logger.warning(
-            "Spider subprocess failed for %s (exit %d): %s",
+            "Spider subprocess failed for %s (exit %d):\n%s",
             source.source_id,
             proc.returncode,
-            stderr.decode(errors="replace")[:500],
+            tail,
         )
         return []
 
