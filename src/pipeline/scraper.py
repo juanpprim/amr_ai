@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 USER_AGENT = "AMRPlatformBot/1.0 (educational research)"
 REQUEST_TIMEOUT = 60.0
 RATE_LIMIT_DELAY = 1.0  # seconds between requests
+MIN_WORDS = 500
 
 AMR_KEYWORDS = re.compile(
     r"(?i)\b(AMR|antimicrobial|antibiotic|anti-?infective"
@@ -59,6 +60,7 @@ class AMRSpider(scrapy.Spider):
         "LOG_LEVEL": "INFO",
         "REQUEST_FINGERPRINTER_IMPLEMENTATION": "2.7",
         "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
+        "MIN_WORDS": MIN_WORDS,
     }
 
     def __init__(
@@ -81,7 +83,10 @@ class AMRSpider(scrapy.Spider):
 
     def parse(self, response: scrapy.http.Response) -> scrapy.http.Response:
         """Parse the start page and follow links."""
-        self._save_page(response)
+        if self._has_enough_words(response):
+            self._save_page(response)
+        else:
+            logger.debug("Skipping %s (below MIN_WORDS threshold)", response.url)
 
         if self.custom_settings.get("DEPTH_LIMIT", 1) <= 1:
             return
@@ -98,14 +103,22 @@ class AMRSpider(scrapy.Spider):
                 yield response.follow(href, callback=self.parse_subpage)
 
     def parse_subpage(self, response: scrapy.http.Response) -> None:
-        """Parse a subpage, saving only if it contains AMR keywords."""
-        body_text = response.text
-        if AMR_KEYWORDS.search(body_text):
+        """Parse a subpage, saving only if it passes word count and AMR keyword checks."""
+        if not self._has_enough_words(response):
+            logger.debug("Skipping %s (below MIN_WORDS threshold)", response.url)
+            return
+        if AMR_KEYWORDS.search(response.text):
             self._save_page(response)
         else:
             logger.debug(
                 "Skipping %s (no AMR keywords found)", response.url
             )
+
+    def _has_enough_words(self, response: scrapy.http.Response) -> bool:
+        """Return True if the visible text meets the minimum word threshold."""
+        min_words: int = self.custom_settings.get("MIN_WORDS", MIN_WORDS)
+        text = " ".join(response.css("body *::text").getall())
+        return len(text.split()) >= min_words
 
     def _slug_from_response(self, response: scrapy.http.Response) -> str:
         """Derive a filesystem-safe slug from URL path, falling back to title."""
