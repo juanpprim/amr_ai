@@ -23,5 +23,8 @@ htmlcov/
 # Scrapy
 .scrapy/
 
+# vscode
+.vscode/
+
 # OS
 .DS_Store
