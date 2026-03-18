@@ -182,22 +182,17 @@ def ingest_markdown_file(
     return len(chunks)
 
 
-def ingest_all_markdown(
+def ingest_markdown_files(
     settings: Settings,
-    collection: chromadb.Collection | None = None,
-) -> int:
+    source_id: str) -> int:
     """Walk data/markdown/ and ingest all .md files into ChromaDB.
 
     Args:
         settings: Application settings.
-        collection: Optional pre-existing collection. If None, creates one.
-
+        
     Returns:
         Total number of chunks ingested across all files.
     """
-    if collection is None:
-        collection = get_or_create_collection(settings)
-
     md_dir = settings.data_markdown_dir
     if not md_dir.exists():
         logger.warning("Markdown directory does not exist: %s", md_dir)
@@ -207,6 +202,9 @@ def ingest_all_markdown(
     if not md_files:
         logger.warning("No markdown files found in %s", md_dir)
         return 0
+
+    if source_id:
+        md_files = [md_file for md_file in md_files if source_id in md_file.stem]
 
     total_chunks = 0
     for i, md_file in enumerate(md_files, 1):

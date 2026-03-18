@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-
 from src.config import Settings
-from src.rag.ingestor import get_or_create_collection, ingest_all_markdown
+from src.rag.ingestor import get_or_create_collection, ingest_markdown_files
 from src.rag.retriever import get_collection_stats
 
 
@@ -24,6 +23,11 @@ def main() -> None:
         "--stats",
         action="store_true",
         help="Print collection statistics and exit",
+    )
+    parser.add_argument(
+        "--source",
+        type=str,
+        help="Ingest a single source by source_id",
     )
     args = parser.parse_args()
 
@@ -46,7 +50,7 @@ def main() -> None:
         return
 
     collection = get_or_create_collection(settings)
-    total = ingest_all_markdown(settings, collection=collection)
+    total = ingest_markdown_files(settings, source_id=args.source)
 
     if total == 0:
         print("No chunks ingested. Is data/markdown/ populated?", file=sys.stderr)

@@ -17,11 +17,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from pathlib import Path
-
-# Add project root to path so src/ is importable
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from src.config import Settings
 from src.pipeline.downloader import download_all, download_and_convert
 from src.pipeline.sources import PHASE_1_SOURCES, get_source_by_id
