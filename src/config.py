@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     data_raw_dir: Path = Path("./data/raw")
     data_markdown_dir: Path = Path("./data/markdown")
 
+    # ChromaDB
+    chroma_persist_dir: Path = Path("./data/chroma_db")
+    chroma_collection_name: str = "amr_knowledge_base"
+
+    # RAG
+    rag_top_k: int = 5
+    rag_chunk_size: int = 800
+    rag_chunk_overlap: int = 100
+
     # Logging
     log_level: str = "INFO"
 
