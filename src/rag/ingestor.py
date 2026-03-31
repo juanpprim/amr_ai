@@ -8,7 +8,9 @@ Reference: SPEC-02, SPEC-00 Section 2.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from pathlib import Path
 
 import chromadb
@@ -16,6 +18,24 @@ import chromadb
 from src.config import Settings
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_chunk_text(text: str) -> str:
+    """Normalize chunk text to make hashing stable across whitespace changes."""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _content_hash(text: str) -> str:
+    """Compute a SHA-256 hash for normalized chunk text."""
+    normalized_text = _normalize_chunk_text(text)
+    return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+
+
+def _chunk_id(source_id: str, text: str) -> str:
+    """Build a deterministic per-source chunk ID from normalized text."""
+    normalized_text = _normalize_chunk_text(text)
+    payload = f"{source_id}|{normalized_text}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def get_or_create_collection(
@@ -92,13 +112,15 @@ def chunk_markdown(
 
         if len(candidate) > chunk_size and current_chunk:
             # Flush current chunk
+            chunk_text = current_chunk.strip()
             chunks.append(
                 {
-                    "id": f"{source_id}_chunk_{chunk_index:04d}",
-                    "text": current_chunk.strip(),
+                    "id": _chunk_id(source_id, chunk_text),
+                    "text": chunk_text,
                     "metadata": {
                         "source_id": source_id,
                         "chunk_index": chunk_index,
+                        "content_hash": _content_hash(chunk_text),
                     },
                 }
             )
@@ -115,24 +137,44 @@ def chunk_markdown(
 
     # Flush remaining text
     if current_chunk.strip():
+        chunk_text = current_chunk.strip()
         chunks.append(
             {
-                "id": f"{source_id}_chunk_{chunk_index:04d}",
-                "text": current_chunk.strip(),
+                "id": _chunk_id(source_id, chunk_text),
+                "text": chunk_text,
                 "metadata": {
                     "source_id": source_id,
                     "chunk_index": chunk_index,
+                    "content_hash": _content_hash(chunk_text),
                 },
             }
+        )
+
+    # Remove exact duplicate chunks produced from repeated content.
+    deduped_chunks: list[dict] = []
+    seen_ids: set[str] = set()
+    for chunk in chunks:
+        chunk_id = str(chunk["id"])
+        if chunk_id in seen_ids:
+            continue
+        seen_ids.add(chunk_id)
+        deduped_chunks.append(chunk)
+
+    if len(deduped_chunks) != len(chunks):
+        logger.debug(
+            "Deduplicated source '%s': %d -> %d chunks",
+            source_id,
+            len(chunks),
+            len(deduped_chunks),
         )
 
     logger.debug(
         "Chunked source '%s': %d chunks from %d chars",
         source_id,
-        len(chunks),
+        len(deduped_chunks),
         len(text),
     )
-    return chunks
+    return deduped_chunks
 
 
 def ingest_markdown_file(
@@ -167,6 +209,10 @@ def ingest_markdown_file(
         logger.warning("No chunks produced from %s", file_path)
         return 0
 
+    # Remove existing chunks for this source to avoid stale records when
+    # chunk boundaries change between runs.
+    collection.delete(where={"source_id": source_id})
+
     # Batch upsert into ChromaDB
     collection.upsert(
         ids=[c["id"] for c in chunks],
@@ -189,7 +235,7 @@ def ingest_markdown_files(
 
     Args:
         settings: Application settings.
-        
+
     Returns:
         Total number of chunks ingested across all files.
     """
@@ -202,6 +248,8 @@ def ingest_markdown_files(
     if not md_files:
         logger.warning("No markdown files found in %s", md_dir)
         return 0
+
+    collection = get_or_create_collection(settings)
 
     if source_id:
         md_files = [md_file for md_file in md_files if source_id in md_file.stem]
