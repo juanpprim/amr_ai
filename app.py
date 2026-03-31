@@ -11,10 +11,10 @@ v3 improvements:
 
 import streamlit as st
 
-from src.agents.models import UserProfile, UserLevel
-from src.agents.agents import AMROrchestrator
+from src.agents.agents import AMROrchestrator, StreamChunk, format_agent_activity_steps
+from src.agents.models import UserLevel, UserProfile
 
-# ─────────────────────────────────────────────f
+# ─────────────────────────────────────────────
 # Page config
 # ─────────────────────────────────────────────
 st.set_page_config(
@@ -98,6 +98,10 @@ st.markdown("""
         padding-bottom: 8px;
         border-bottom: 2px solid #f0f0f0;
     }
+    /* Agent activity expander */
+    div[data-testid="stExpander"] details summary {
+        font-weight: 600;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -107,7 +111,8 @@ st.markdown("""
 # ─────────────────────────────────────────────
 
 @st.cache_resource
-def get_orchestrator() -> AMROrchestrator:
+def get_orchestrator(version: str = "v2-real-stream") -> AMROrchestrator:
+    _ = version  # cache key to refresh orchestrator when streaming logic changes
     return AMROrchestrator()
 
 orch = get_orchestrator()
@@ -419,6 +424,17 @@ with col_chat:
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
+                act = msg.get("activity")
+                if act and act.get("steps"):
+                    with st.expander(
+                        "⚙️ Agent activity — Done ✓",
+                        expanded=act.get("expanded", False),
+                    ):
+                        if act.get("panel"):
+                            st.caption(
+                                f"Side panel: **{act['panel']}**"
+                            )
+                        st.markdown("\n\n".join(act["steps"]))
 
     # ── Chat input + streaming response ──
     if prompt := st.chat_input("Ask about AMR, request a quiz, or create flashcards..."):
@@ -438,13 +454,56 @@ with col_chat:
             with st.chat_message("user"):
                 st.markdown(prompt)
             with st.chat_message("assistant"):
-                response_text = st.write_stream(generator)
+                activity_placeholder = st.empty()
+                live_tool_events = []
+
+                def text_stream():
+                    for item in generator:
+                        # Backward-compatible handling:
+                        # some cached orchestrator instances can still yield plain strings.
+                        if isinstance(item, str):
+                            if item:
+                                yield item
+                            continue
+
+                        chunk: StreamChunk = item
+                        if chunk.kind == "tool_event" and chunk.tool_event:
+                            live_tool_events.append(chunk.tool_event)
+                            running_steps, _ = format_agent_activity_steps(
+                                live_tool_events,
+                                panel_type=None,
+                            )
+                            with activity_placeholder.container():
+                                with st.expander(
+                                    "⚙️ Agent activity — Running...",
+                                    expanded=True,
+                                ):
+                                    st.markdown("\n\n".join(running_steps))
+                            continue
+
+                        if chunk.kind == "text" and chunk.text:
+                            yield chunk.text
+
+                response_text = st.write_stream(text_stream())
 
         # ── After stream completes: update all state ──
 
-        # Save response to display messages
+        activity_steps, activity_expanded = format_agent_activity_steps(
+            stream_meta.tool_events,
+            panel_type=stream_meta.panel,
+        )
+
+        # Save assistant turn + collapsible activity log (shown after completion)
         st.session_state.messages.append(
-            {"role": "assistant", "content": response_text}
+            {
+                "role": "assistant",
+                "content": response_text,
+                "activity": {
+                    "steps": activity_steps,
+                    "expanded": activity_expanded,
+                    "panel": stream_meta.panel,
+                },
+            }
         )
 
         # Update agent memory

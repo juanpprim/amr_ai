@@ -11,7 +11,9 @@ Changes from v2:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Generator
+from queue import Queue
+from threading import Thread
+from typing import Callable, Generator, Literal
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage
@@ -35,10 +37,28 @@ class ToolOutput:
 
 
 @dataclass
+class ToolEvent:
+    """Simple tool lifecycle event for UI status messages."""
+    tool_name: str
+    status: str  # "start" | "complete"
+    message: str
+
+
+@dataclass
+class StreamChunk:
+    """Single stream item sent to the UI."""
+    kind: Literal["text", "tool_event"]
+    text: str = ""
+    tool_event: ToolEvent | None = None
+
+
+@dataclass
 class AgentDeps:
     """Injected into the agent at runtime."""
     user_profile: UserProfile
     tool_output: ToolOutput = field(default_factory=ToolOutput)
+    tool_events: list[ToolEvent] = field(default_factory=list)
+    stream_event_sink: Callable[[ToolEvent], None] | None = None
 
 
 # ─────────────────────────────────────────────
@@ -56,6 +76,98 @@ class StreamResult:
         self.panel: str | None = None
         self.data: object | None = None
         self.full_text: str = ""
+        self.tool_events: list[ToolEvent] = []
+
+
+def _tool_display_name(tool_name: str) -> str:
+    """Map internal tool function names to user-facing labels."""
+    labels = {
+        "generate_quiz": "quiz",
+        "generate_flashcards": "flashcards",
+        "evaluate_answer": "answer evaluation",
+    }
+    return labels.get(tool_name, tool_name.replace("_", " "))
+
+
+_TOOL_STATUS_MESSAGES: dict[str, dict[str, str]] = {
+    "generate_quiz": {
+        "start": "Building your quiz...",
+        "complete": "Quiz ready. Let's test your knowledge!",
+    },
+    "generate_flashcards": {
+        "start": "Creating your flashcards...",
+        "complete": "Flashcards ready for review.",
+    },
+    "evaluate_answer": {
+        "start": "Reviewing your answer...",
+        "complete": "Evaluation complete. Feedback is ready.",
+    },
+}
+
+
+def _tool_status_message(tool_name: str, status: str) -> str:
+    """Return custom wording for tool lifecycle messages."""
+    custom = _TOOL_STATUS_MESSAGES.get(tool_name, {}).get(status)
+    if custom:
+        return custom
+
+    display_name = _tool_display_name(tool_name)
+    if status == "start":
+        return f"Using {display_name} tool..."
+    return f"{display_name.capitalize()} complete."
+
+
+def format_agent_activity_steps(
+    tool_events: list[ToolEvent],
+    *,
+    panel_type: str | None = None,
+) -> tuple[list[str], bool]:
+    """
+    Build markdown lines for the Agent activity expander.
+
+    Returns (lines, expand_by_default). When tools ran, expand defaults to True
+    so the log is visible without an extra click.
+    """
+    if not tool_events:
+        if panel_type:
+            label = {
+                "quiz": "Quiz panel",
+                "flashcards": "Flashcards panel",
+                "evaluation": "Evaluation panel",
+            }.get(panel_type, "Side panel")
+            return ([f"✅ **Done** — {label} is ready."], False)
+        return (["✅ **Response** — Answered directly (no tools)."], False)
+
+    lines: list[str] = []
+    for ev in tool_events:
+        icon = "▶️" if ev.status == "start" else "✅"
+        label = _tool_display_name(ev.tool_name).replace("_", " ").title()
+        lines.append(f"{icon} **{label}** — {ev.message}")
+    return (lines, True)
+
+
+def _record_tool_start(ctx: RunContext[AgentDeps], tool_name: str) -> None:
+    """Record a user-facing tool start event."""
+    event = ToolEvent(
+        tool_name=tool_name,
+        status="start",
+        message=_tool_status_message(tool_name, "start"),
+    )
+    ctx.deps.tool_events.append(event)
+    if ctx.deps.stream_event_sink:
+        ctx.deps.stream_event_sink(event)
+
+
+def _record_tool_complete(ctx: RunContext[AgentDeps], tool_name: str) -> None:
+    """Record a user-facing tool completion event."""
+    event = ToolEvent(
+        tool_name=tool_name,
+        status="complete",
+        message=_tool_status_message(tool_name, "complete"),
+    )
+    ctx.deps.tool_events.append(event)
+    if ctx.deps.stream_event_sink:
+        ctx.deps.stream_event_sink(event)
 
 
 # ─────────────────────────────────────────────
@@ -102,6 +214,7 @@ def generate_quiz(
         topic: The AMR topic to quiz on (e.g. 'beta-lactamases', 'ESKAPE pathogens')
         num_questions: Number of questions (3-7, default 5)
     """
+    _record_tool_start(ctx, "generate_quiz")
     level = ctx.deps.user_profile.level.value
 
     quiz_gen = Agent(
@@ -131,6 +244,7 @@ def generate_quiz(
     ctx.deps.tool_output.data = quiz
 
     n = len(quiz.questions)
+    _record_tool_complete(ctx, "generate_quiz")
     return f"Quiz created: {n} questions about {topic} at {level} level."
 
 
@@ -148,6 +262,7 @@ def generate_flashcards(
         topic: The AMR topic (e.g. 'efflux pumps', 'antibiotic stewardship')
         num_cards: Number of cards (4-10, default 6)
     """
+    _record_tool_start(ctx, "generate_flashcards")
     level = ctx.deps.user_profile.level.value
 
     fc_gen = Agent(
@@ -171,6 +286,7 @@ def generate_flashcards(
     ctx.deps.tool_output.panel_type = "flashcards"
     ctx.deps.tool_output.data = deck
 
+    _record_tool_complete(ctx, "generate_flashcards")
     return f"Created {len(deck.cards)} flashcards: '{deck.deck_title}'."
 
 
@@ -190,6 +306,7 @@ def evaluate_answer(
         student_answer: What the student wrote
         reference_answer: The expected correct answer
     """
+    _record_tool_start(ctx, "evaluate_answer")
     level = ctx.deps.user_profile.level.value
 
     judge = Agent(
@@ -216,6 +333,7 @@ def evaluate_answer(
     ctx.deps.tool_output.panel_type = "evaluation"
     ctx.deps.tool_output.data = evaluation
 
+    _record_tool_complete(ctx, "evaluate_answer")
     return f"Evaluation complete: {evaluation.score:.0%} score."
 
 
@@ -274,7 +392,7 @@ class AMROrchestrator:
         message: str,
         profile: UserProfile,
         message_history: list[ModelMessage] | None = None,
-    ) -> tuple[Generator[str, None, None], StreamResult]:
+    ) -> tuple[Generator[StreamChunk, None, None], StreamResult]:
         """
         Returns (text_generator, stream_result).
 
@@ -286,43 +404,58 @@ class AMROrchestrator:
             if meta.panel: open_panel(meta.panel, meta.data)
         """
         stream_result = StreamResult()
-        deps = AgentDeps(user_profile=profile)
+        stream_queue: Queue[StreamChunk | None] = Queue()
 
-        def text_generator() -> Generator[str, None, None]:
+        deps = AgentDeps(
+            user_profile=profile,
+            stream_event_sink=lambda event: stream_queue.put(
+                StreamChunk(kind="tool_event", tool_event=event)
+            ),
+        )
+
+        def worker() -> None:
             try:
-                with self._agent.run_stream_sync(
+                result = self._agent.run_stream_sync(
                     message,
                     deps=deps,
                     message_history=message_history,
-                ) as result:
-                    # stream_text() yields CUMULATIVE text.
-                    # Convert to deltas for st.write_stream().
-                    previous = ""
-                    for chunk in result.stream_text():
-                        delta = chunk[len(previous):]
-                        previous = chunk
-                        if delta:
-                            yield delta
+                )
+                text_parts: list[str] = []
 
-                    # Stream done — capture metadata
-                    stream_result.full_text = previous
-                    stream_result.message_history = result.all_messages()
+                # Request real delta streaming with no debouncing.
+                for delta in result.stream_text(delta=True, debounce_by=None):
+                    if delta:
+                        text_parts.append(delta)
+                        stream_queue.put(StreamChunk(kind="text", text=delta))
 
-                    # Check if a tool wrote panel data
-                    if deps.tool_output.panel_type:
-                        stream_result.panel = deps.tool_output.panel_type
-                        stream_result.data = deps.tool_output.data
-
+                stream_result.full_text = "".join(text_parts)
+                stream_result.message_history = result.all_messages()
+                if deps.tool_output.panel_type:
+                    stream_result.panel = deps.tool_output.panel_type
+                    stream_result.data = deps.tool_output.data
+                stream_result.tool_events = list(deps.tool_events)
             except Exception:
-                # Fallback to sync if streaming fails
                 fallback = self._run_sync(message, profile, deps, message_history)
                 stream_result.full_text = fallback["response"]
                 stream_result.message_history = fallback["message_history"]
                 stream_result.panel = fallback.get("panel")
                 stream_result.data = fallback.get("data")
-                yield stream_result.full_text
+                stream_result.tool_events = fallback.get("tool_events", [])
+                if stream_result.full_text:
+                    stream_queue.put(StreamChunk(kind="text", text=stream_result.full_text))
+            finally:
+                stream_queue.put(None)
 
-        return text_generator(), stream_result
+        Thread(target=worker, daemon=True).start()
+
+        def chunk_generator() -> Generator[StreamChunk, None, None]:
+            while True:
+                item = stream_queue.get()
+                if item is None:
+                    break
+                yield item
+
+        return chunk_generator(), stream_result
 
     # ── Non-streaming entry point ──
 
@@ -354,6 +487,7 @@ class AMROrchestrator:
                 "panel": deps.tool_output.panel_type,
                 "data": deps.tool_output.data,
                 "message_history": result.all_messages(),
+                "tool_events": list(deps.tool_events),
             }
         except Exception as e:
             return {
@@ -361,6 +495,7 @@ class AMROrchestrator:
                 "panel": None,
                 "data": None,
                 "message_history": message_history or [],
+                "tool_events": [],
             }
 
     # ── Convenience: evaluate flashcard ──
