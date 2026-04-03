@@ -10,13 +10,18 @@ Changes from v2:
 
 from __future__ import annotations
 
+import logging
+import inspect
 from dataclasses import dataclass, field
 from queue import Queue
 from threading import Thread
 from typing import Callable, Generator, Literal
 
+import chromadb
+from exa_py import Exa
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage
+from pydantic_ai.common_tools.duckduckgo import duckduckgo_search_tool
 
 from src.agents.models import (
     AnswerEvaluation,
@@ -24,6 +29,11 @@ from src.agents.models import (
     QuizSet,
     UserProfile,
 )
+from src.config import Settings
+from src.models import RetrievedContext
+from src.rag.retriever import retrieve
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
 # Dependencies — tools write structured output here
@@ -59,6 +69,8 @@ class AgentDeps:
     tool_output: ToolOutput = field(default_factory=ToolOutput)
     tool_events: list[ToolEvent] = field(default_factory=list)
     stream_event_sink: Callable[[ToolEvent], None] | None = None
+    collection: chromadb.Collection | None = None
+    settings: Settings | None = None
 
 
 # ─────────────────────────────────────────────
@@ -85,6 +97,8 @@ def _tool_display_name(tool_name: str) -> str:
         "generate_quiz": "quiz",
         "generate_flashcards": "flashcards",
         "evaluate_answer": "answer evaluation",
+        "search_knowledge_base": "knowledge base search",
+        "search_web": "web search",
     }
     return labels.get(tool_name, tool_name.replace("_", " "))
 
@@ -101,6 +115,14 @@ _TOOL_STATUS_MESSAGES: dict[str, dict[str, str]] = {
     "evaluate_answer": {
         "start": "Reviewing your answer...",
         "complete": "Evaluation complete. Feedback is ready.",
+    },
+    "search_knowledge_base": {
+        "start": "Searching knowledge base...",
+        "complete": "Found relevant context.",
+    },
+    "search_web": {
+        "start": "Searching the web...",
+        "complete": "Web results ready.",
     },
 }
 
@@ -175,29 +197,43 @@ def _record_tool_complete(ctx: RunContext[AgentDeps], tool_name: str) -> None:
 # ─────────────────────────────────────────────
 
 _AMR_SYSTEM_INSTRUCTIONS = """
-        You are an expert Antimicrobial Resistance (AMR) learning assistant.
+You are an expert Antimicrobial Resistance (AMR) learning assistant.
 
-        You can do four things:
-        1. ANSWER QUESTIONS about AMR directly (no tool needed)
-        2. GENERATE QUIZZES using the `generate_quiz` tool
-        3. CREATE FLASHCARDS using the `generate_flashcards` tool
-        4. EVALUATE ANSWERS using the `evaluate_answer` tool
+You can do six things:
+1. SEARCH THE KNOWLEDGE BASE using `search_knowledge_base` for grounded answers
+2. SEARCH THE WEB using `search_web` for recent or supplementary information
+3. ANSWER QUESTIONS about AMR using retrieved context
+4. GENERATE QUIZZES using the `generate_quiz` tool
+5. CREATE FLASHCARDS using the `generate_flashcards` tool
+6. EVALUATE ANSWERS using the `evaluate_answer` tool
 
-        DECISION RULES:
-        - If the user asks a factual question → answer directly in your response
-        - If the user wants a quiz or test → call generate_quiz
-        - If the user wants flashcards or study evaluation → call evaluate_answer
+DECISION RULES:
+- If the user asks a factual question → call search_knowledge_base FIRST,
+  then synthesize an answer from the retrieved context.
+  Always cite sources (e.g. [Source: who-amr-factsheet]).
+- If the knowledge base returns "Sufficient context: No" → call search_web
+  as a follow-up to supplement the answer.
+- If the user asks about *recent*, *latest*, or *new* research → call
+  search_web directly (optionally also search_knowledge_base).
+- If the user wants a quiz or test → call generate_quiz
+- If the user wants flashcards or study cards → call generate_flashcards
+- If the user wants their answer graded → call evaluate_answer
+- For simple greetings or clarifications → respond directly, no tools needed
 
-        When answering questions directly:
-        - Adapt complexity to the user's level
-        - Be thorough but concise
-        - End with a follow-up question to deepen learning
+When answering questions with retrieved context:
+- Synthesize information from the chunks into a coherent answer
+- Cite sources using the source IDs provided
+- Adapt complexity to the user's level
+- Be thorough but concise
+- End with a follow-up question to deepen learning
+- If both knowledge base and web results were used, integrate both seamlessly
 
-        After calling a tool, write a SHORT friendly message (1-2 sentences)
-        telling the user what was created. Do NOT repeat the tool's raw data.
+After calling a tool that produces a panel (quiz, flashcards, evaluation),
+write a SHORT friendly message (1-2 sentences) telling the user what was
+created. Do NOT repeat the tool's raw data.
 
-        You have full conversation history — reference prior topics naturally.
-        """.strip()
+You have full conversation history — reference prior topics naturally.
+""".strip()
 
 
 # ─────────────────────────────────────────────
@@ -207,12 +243,23 @@ _AMR_SYSTEM_INSTRUCTIONS = """
 def generate_quiz(
     ctx: RunContext[AgentDeps], topic: str, num_questions: int = 5
 ) -> str:
-    """
-    Generate a multiple-choice quiz on an AMR topic.
+    """Build a multiple-choice quiz and show it in the quiz panel.
+
+    Use when the user asks for a quiz, practice questions, a test, MCQs, or
+    wants to check knowledge on a **specific** AMR theme. Do **not** use for
+    open-ended factual questions—answer those in normal text without this tool.
+
+    Difficulty follows the user's profile level. Full question data is stored
+    for the UI; the return value is only a short confirmation for the model.
 
     Args:
-        topic: The AMR topic to quiz on (e.g. 'beta-lactamases', 'ESKAPE pathogens')
-        num_questions: Number of questions (3-7, default 5)
+        topic: One coherent AMR subject for every question (e.g. beta-lactamases,
+            ESKAPE pathogens, antibiotic stewardship). Avoid mixing unrelated
+            themes in a single quiz.
+        num_questions: How many MCQs to generate. Prefer 3–7; default 5.
+
+    Returns:
+        Brief confirmation with question count, topic, and level.
     """
     _record_tool_start(ctx, "generate_quiz")
     level = ctx.deps.user_profile.level.value
@@ -255,12 +302,22 @@ def generate_quiz(
 def generate_flashcards(
     ctx: RunContext[AgentDeps], topic: str, num_cards: int = 6
 ) -> str:
-    """
-    Create flashcards on an AMR topic for spaced repetition study.
+    """Create a flashcard deck and show it in the flashcards panel.
+
+    Use when the user wants flashcards, study cards, or quick recall items on
+    an AMR topic. Do **not** use for multiple-choice quizzes (use
+    ``generate_quiz``) or for grading a free-text answer the user just wrote
+    (use ``evaluate_answer`` with their text and the expected answer).
+
+    Card difficulty follows the user's profile level. The deck payload is
+    stored for the UI; the return value is a short confirmation.
 
     Args:
-        topic: The AMR topic (e.g. 'efflux pumps', 'antibiotic stewardship')
-        num_cards: Number of cards (4-10, default 6)
+        topic: AMR theme for the deck (e.g. efflux pumps, MRSA, stewardship).
+        num_cards: How many cards to generate. Prefer 4–10; default 6.
+
+    Returns:
+        Short confirmation with card count and deck title.
     """
     _record_tool_start(ctx, "generate_flashcards")
     level = ctx.deps.user_profile.level.value
@@ -299,12 +356,23 @@ def evaluate_answer(
     student_answer: str,
     reference_answer: str,
 ) -> str:
-    """
-    Evaluate a student's free-text answer against a reference answer.
+    """Judge a learner's free-text answer against a reference answer.
+
+    Use when you have **both** the user's submitted answer and the correct or
+    model answer to compare (e.g. after a flashcard reveal, short-answer item,
+    or explicit "evaluate my answer" with quoted text). Do **not** use for
+    general AMR questions with no specific answer to score.
+
+    Structured feedback (score, strengths, gaps) is stored for the evaluation
+    panel; the return value is a one-line score summary.
 
     Args:
-        student_answer: What the student wrote
-        reference_answer: The expected correct answer
+        student_answer: The learner's response, as they wrote it.
+        reference_answer: The expected or gold-standard answer to judge against.
+
+    Returns:
+        Brief line including the percentage score; detailed feedback is in panel
+        data, not in this string.
     """
     _record_tool_start(ctx, "evaluate_answer")
     level = ctx.deps.user_profile.level.value
@@ -338,6 +406,126 @@ def evaluate_answer(
 
 
 # ─────────────────────────────────────────────
+# Tool: Search Knowledge Base (RAG)
+# ─────────────────────────────────────────────
+
+
+def _format_retrieved_context(ctx_result: RetrievedContext) -> str:
+    """Format RetrievedContext into a string the agent can synthesize."""
+    if not ctx_result.chunks:
+        return (
+            "No relevant context found in the knowledge base.\n"
+            f"Query: {ctx_result.query}\n"
+            "Sufficient context: No"
+        )
+
+    parts: list[str] = []
+    for i, chunk in enumerate(ctx_result.chunks, 1):
+        parts.append(
+            f"[Source: {chunk.source_id}, Score: {chunk.score:.2f}]\n({i}) {chunk.text}"
+        )
+
+    sources_line = ", ".join(ctx_result.sources_cited)
+    sufficient = "Yes" if ctx_result.has_sufficient_context else "No"
+    parts.append(f"---\nSources: {sources_line}\nSufficient context: {sufficient}")
+    return "\n\n".join(parts)
+
+
+def _format_web_results(results: list[dict[str, str]], query: str) -> str:
+    """Format DuckDuckGo results into a citation-friendly context string."""
+    if not results:
+        return f"No relevant web results found.\nQuery: {query}\nSufficient context: No"
+
+    parts: list[str] = []
+    for i, item in enumerate(results, 1):
+        title = item.get("title", "Untitled result")
+        href = item.get("href", "")
+        body = item.get("body", "")
+        parts.append(f"[Web {i}] {title}\nURL: {href}\nSnippet: {body}")
+
+    parts.append("---\nSources: web-search\nSufficient context: Yes")
+    return "\n\n".join(parts)
+
+
+def search_knowledge_base(
+    ctx: RunContext[AgentDeps],
+    query: str,
+) -> str:
+    """Search the local AMR knowledge base for relevant context.
+
+    Use when the user asks a factual question about AMR and you want
+    grounded, source-backed information to base your answer on.
+    Prefer this over answering purely from your training data.
+
+    Do NOT use for quiz generation, flashcard creation, or answer
+    evaluation — those have dedicated tools.
+
+    Args:
+        query: A focused search query derived from the user's question.
+            Rephrase the user's question into a clear retrieval query
+            (e.g. "mechanisms of carbapenem resistance" rather than
+            "how do bacteria become resistant to carbapenems?").
+
+    Returns:
+        Formatted context chunks with source IDs and relevance scores.
+        If 'Sufficient context: No', consider calling search_web
+        for additional information.
+    """
+    _record_tool_start(ctx, "search_knowledge_base")
+
+    collection = ctx.deps.collection
+    if collection is None:
+        _record_tool_complete(ctx, "search_knowledge_base")
+        return "Knowledge base unavailable: no ChromaDB collection configured."
+
+    top_k = 5
+    if ctx.deps.settings:
+        top_k = ctx.deps.settings.rag_top_k
+
+    # expertise_level = ctx.deps.user_profile.level.value
+
+    result = retrieve(
+        query=query,
+        collection=collection,
+        top_k=top_k,
+        expertise_level=None, # TODO: no expertise level save in chromadb yet
+    )
+
+    formatted = _format_retrieved_context(result)
+    _record_tool_complete(ctx, "search_knowledge_base")
+    return formatted
+
+
+async def search_web(
+    ctx: RunContext[AgentDeps],
+    query: str,
+) -> str:
+    """Perform a web search using the provided query string.
+
+    This tool logs the search execution in the run context and retrieves
+    relevant results via the DuckDuckGo search backend.
+
+    Args:
+        ctx: Execution context containing agent state and logging utilities.
+        query: The search query string.
+
+    Returns:
+        A string containing the aggregated search results.
+    """
+    _record_tool_start(ctx, "search_web")
+    ddg_tool = duckduckgo_search_tool()
+    result_or_awaitable = ddg_tool.function(query)
+    result = (
+        await result_or_awaitable
+        if inspect.isawaitable(result_or_awaitable)
+        else result_or_awaitable
+    )
+    formatted = _format_web_results(result, query)
+    _record_tool_complete(ctx, "search_web")
+    return formatted
+
+
+# ─────────────────────────────────────────────
 # Orchestrator with Streaming
 # ─────────────────────────────────────────────
 
@@ -350,7 +538,13 @@ class AMROrchestrator:
       handle_message()           → dict (non-streaming fallback)
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        collection: chromadb.Collection | None = None,
+        settings: Settings | None = None,
+    ) -> None:
+        self._collection = collection
+        self._settings = settings
         self._agent = Agent(
             "openai:gpt-4o",
             deps_type=AgentDeps,
@@ -359,6 +553,8 @@ class AMROrchestrator:
                 generate_quiz,
                 generate_flashcards,
                 evaluate_answer,
+                search_knowledge_base,
+                search_web,
             ],
         )
 
@@ -380,7 +576,7 @@ class AMROrchestrator:
                 """\nLevel-adaptation guide:
         - beginner: Simple language, analogies, no jargon
         - intermediate: Proper terminology with brief explanations
-        - advanced: Technical depth, cite mechanisms and guidelines
+        - advanced: Technical depthorch., cite mechanisms and guidelines
         """.strip()
             )
             return "\n".join(lines)
@@ -403,11 +599,30 @@ class AMROrchestrator:
             st.session_state.agent_history = meta.message_history
             if meta.panel: open_panel(meta.panel, meta.data)
         """
+        # Verify that message is about AMR as a guardrail
+        
+        check_amr = Agent(
+            "openai:gpt-4o",
+            output_type=bool,
+            instructions="Make sure that the message is about AMR. If it is not, return False. If it is, return True."
+        )
         stream_result = StreamResult()
+        result = check_amr.run_sync(f"Is the following message about AMR? {message}")
+        if not result.output:
+            stream_result.full_text = "The message is not about AMR. Please ask me about AMR."
+            stream_result.message_history = message_history or []
+
+            def non_amr_generator() -> Generator[StreamChunk, None, None]:
+                yield StreamChunk(kind="text", text=stream_result.full_text)
+
+            return non_amr_generator(), stream_result
+
         stream_queue: Queue[StreamChunk | None] = Queue()
 
         deps = AgentDeps(
             user_profile=profile,
+            collection=self._collection,
+            settings=self._settings,
             stream_event_sink=lambda event: stream_queue.put(
                 StreamChunk(kind="tool_event", tool_event=event)
             ),
@@ -466,7 +681,11 @@ class AMROrchestrator:
         message_history: list[ModelMessage] | None = None,
     ) -> dict:
         """Non-streaming. Returns dict with response, panel, data, message_history."""
-        deps = AgentDeps(user_profile=profile)
+        deps = AgentDeps(
+            user_profile=profile,
+            collection=self._collection,
+            settings=self._settings,
+        )
         return self._run_sync(message, profile, deps, message_history)
 
     def _run_sync(
@@ -522,14 +741,22 @@ class AMROrchestrator:
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    orch = AMROrchestrator()
+    from src.rag.ingestor import get_or_create_collection
+
+    _settings = Settings()
+    try:
+        _collection = get_or_create_collection(_settings)
+    except Exception:
+        _collection = None
+
+    orch = AMROrchestrator(collection=_collection, settings=_settings)
     profile = UserProfile()
 
     # Test 1: Streaming Q&A
     print("=" * 60)
     print("TEST 1: Streaming Q&A")
     print("=" * 60)
-    gen, meta = orch.handle_message_streaming("What are ESKAPE pathogens?", profile)
+    gen, meta = orch.handle_message_streaming("What are main risks of AMR?", profile)
     print("Stream: ", end="", flush=True)
     for chunk in gen:
         print(chunk, end="", flush=True)

@@ -111,9 +111,18 @@ st.markdown("""
 # ─────────────────────────────────────────────
 
 @st.cache_resource
-def get_orchestrator(version: str = "v2-real-stream") -> AMROrchestrator:
-    _ = version  # cache key to refresh orchestrator when streaming logic changes
-    return AMROrchestrator()
+def get_orchestrator(version: str = "v3-rag-exa") -> AMROrchestrator:
+    """Create orchestrator with ChromaDB collection and settings."""
+    _ = version
+    from src.config import Settings
+    from src.rag.ingestor import get_or_create_collection
+
+    settings = Settings()
+    try:
+        collection = get_or_create_collection(settings)
+    except Exception:
+        collection = None
+    return AMROrchestrator(collection=collection, settings=settings)
 
 orch = get_orchestrator()
 
@@ -443,6 +452,7 @@ with col_chat:
 
         # Get streaming generator + metadata container
         profile = get_profile()
+        
         generator, stream_meta = orch.handle_message_streaming(
             message=prompt,
             profile=profile,
