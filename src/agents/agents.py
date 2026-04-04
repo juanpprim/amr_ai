@@ -17,6 +17,7 @@ from queue import Queue
 from threading import Thread
 from typing import Callable, Generator, Literal
 
+import logfire
 import chromadb
 from exa_py import Exa
 from pydantic_ai import Agent, RunContext
@@ -33,7 +34,12 @@ from src.config import Settings
 from src.models import RetrievedContext
 from src.rag.retriever import retrieve
 
+
+settings = Settings()
 logger = logging.getLogger(__name__)
+logfire_token = settings.logfire_api_key.strip() or None
+logfire.configure(token=logfire_token)
+logfire.instrument_pydantic_ai()
 
 # ─────────────────────────────────────────────
 # Dependencies — tools write structured output here

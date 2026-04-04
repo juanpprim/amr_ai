@@ -10,6 +10,7 @@ v3 improvements:
 """
 
 import streamlit as st
+import logfire
 
 from src.agents.agents import AMROrchestrator, StreamChunk, format_agent_activity_steps
 from src.agents.models import UserLevel, UserProfile
@@ -178,6 +179,10 @@ def init_state():
         if k not in st.session_state:
             st.session_state[k] = v
 
+    if "logfire_context" not in st.session_state:
+        with logfire.span("streamlit_session"):
+            st.session_state.logfire_context = logfire.get_context()
+
 init_state()
 
 
@@ -264,12 +269,13 @@ def render_flashcards():
             with st.spinner("🤖 Evaluating..."):
                 try:
                     profile = get_profile()
-                    result = orch.evaluate_flashcard(
-                        user_answer=user_answer,
-                        expected_answer=card["answer"],
-                        profile=profile,
-                        message_history=st.session_state.agent_history,
-                    )
+                    with logfire.attach_context(st.session_state.logfire_context):
+                        result = orch.evaluate_flashcard(
+                            user_answer=user_answer,
+                            expected_answer=card["answer"],
+                            profile=profile,
+                            message_history=st.session_state.agent_history,
+                        )
                     st.session_state.agent_history = result["message_history"]
                     if result["data"]:
                         st.session_state.evaluation = result["data"].model_dump()
@@ -452,49 +458,50 @@ with col_chat:
 
         # Get streaming generator + metadata container
         profile = get_profile()
-        
-        generator, stream_meta = orch.handle_message_streaming(
-            message=prompt,
-            profile=profile,
-            message_history=st.session_state.agent_history,
-        )
+        with logfire.attach_context(st.session_state.logfire_context):
+            generator, stream_meta = orch.handle_message_streaming(
+                message=prompt,
+                profile=profile,
+                message_history=st.session_state.agent_history,
+            )
 
         # Stream the response into the chat
-        with chat_box:
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            with st.chat_message("assistant"):
-                activity_placeholder = st.empty()
-                live_tool_events = []
+        with logfire.attach_context(st.session_state.logfire_context):
+            with chat_box:
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                with st.chat_message("assistant"):
+                    activity_placeholder = st.empty()
+                    live_tool_events = []
 
-                def text_stream():
-                    for item in generator:
-                        # Backward-compatible handling:
-                        # some cached orchestrator instances can still yield plain strings.
-                        if isinstance(item, str):
-                            if item:
-                                yield item
-                            continue
+                    def text_stream():
+                        for item in generator:
+                            # Backward-compatible handling:
+                            # some cached orchestrator instances can still yield plain strings.
+                            if isinstance(item, str):
+                                if item:
+                                    yield item
+                                continue
 
-                        chunk: StreamChunk = item
-                        if chunk.kind == "tool_event" and chunk.tool_event:
-                            live_tool_events.append(chunk.tool_event)
-                            running_steps, _ = format_agent_activity_steps(
-                                live_tool_events,
-                                panel_type=None,
-                            )
-                            with activity_placeholder.container():
-                                with st.expander(
-                                    "⚙️ Agent activity — Running...",
-                                    expanded=True,
-                                ):
-                                    st.markdown("\n\n".join(running_steps))
-                            continue
+                            chunk: StreamChunk = item
+                            if chunk.kind == "tool_event" and chunk.tool_event:
+                                live_tool_events.append(chunk.tool_event)
+                                running_steps, _ = format_agent_activity_steps(
+                                    live_tool_events,
+                                    panel_type=None,
+                                )
+                                with activity_placeholder.container():
+                                    with st.expander(
+                                        "⚙️ Agent activity — Running...",
+                                        expanded=True,
+                                    ):
+                                        st.markdown("\n\n".join(running_steps))
+                                continue
 
-                        if chunk.kind == "text" and chunk.text:
-                            yield chunk.text
+                            if chunk.kind == "text" and chunk.text:
+                                yield chunk.text
 
-                response_text = st.write_stream(text_stream())
+                    response_text = st.write_stream(text_stream())
 
         # ── After stream completes: update all state ──
 
@@ -595,7 +602,9 @@ with st.sidebar:
     st.divider()
     if st.button("🗑️ Reset conversation"):
         for key in list(st.session_state.keys()):
-            del st.session_state[key]
+            del st.session_state[key]        
+        with logfire.span("streamlit_session"):
+            st.session_state.logfire_context = logfire.get_context()
         st.rerun()
 
     st.divider()

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # PubMed / NCBI
     pubmed_api_key: str = ""
     pubmed_email: str = ""
+    logfire_api_key: str = ""
 
     # Data directories
     data_raw_dir: Path = Path("./data/raw")
