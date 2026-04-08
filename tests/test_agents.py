@@ -23,17 +23,40 @@ from src.agents.agents import (
 )
 
 pytestmark = pytest.mark.anyio
-models.ALLOW_MODEL_REQUESTS = False
+models.ALLOW_MODEL_REQUESTS = True
+
+# Matches the shape of ``_format_retrieved_context`` in ``src/agents/agents.py``.
+_STUB_KB_SOURCE_ID = "amr_test_source.txt"
 
 
 def search_knowledge_base(ctx: RunContext[AgentDeps], query: str) -> str:
     """Test double; name must match the tool the :class:`FunctionModel` invokes."""
-    return "AMR is a problem"
+    body = """AMR stands for Antimicrobial Resistance. It refers to the ability of
+microorganisms like bacteria, viruses, fungi, and parasites to
+resist the effects of the drugs, such as antibiotics, antivirals,
+and antifungals, that were previously effective in treating infections
+caused by them. This resistance means that standard treatments become
+ineffective, infections persist, and the risk of spreading to others
+increases."""
+    return (
+        f"[Source: {_STUB_KB_SOURCE_ID}, Score: 0.95]\n"
+        f"(1) {body}\n\n"
+        f"---\n"
+        f"Sources: {_STUB_KB_SOURCE_ID}\n"
+        f"Sufficient context: Yes"
+    )
 
 
 async def search_web(ctx: RunContext[AgentDeps], query: str) -> str:
     """Test double; name must match registered tool name ``search_web``."""
-    return "AMR is a problem"
+    return (
+        "[Web 1] Test result\n"
+        "URL: https://example.com\n"
+        "Snippet: Stub web hit for tests.\n\n"
+        "---\n"
+        "Sources: web-search\n"
+        "Sufficient context: Yes"
+    )
 
 
 def _kb_then_summarize(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -50,7 +73,7 @@ def _kb_then_summarize(messages: list[ModelMessage], info: AgentInfo) -> ModelRe
 def test_amr_orchestrator_uses_kb_stub():
     orchestrator = AMROrchestrator(collection=None, settings=None)
     with orchestrator._agent.override(
-        model=FunctionModel(_kb_then_summarize),
+        # model=FunctionModel(_kb_then_summarize),
         tools=[
             generate_quiz,
             generate_flashcards,
@@ -61,7 +84,7 @@ def test_amr_orchestrator_uses_kb_stub():
     ):
         result = orchestrator.handle_message("What is AMR?", UserProfile())
 
-    assert "AMR is a problem" in result["response"]
+    assert _STUB_KB_SOURCE_ID in result["response"]
 
 
 ## Check context sharing in the flashcard / quiz / evaluation
