@@ -17,6 +17,19 @@ dependencies = [
     "lxml>=5.0",
     # Document conversion
     "docling>=2.0",
+    # Vector DB
+    "chromadb>=0.5.0,<1.0",
+    # Chroma 0.6.x uses pre-v6 posthog capture signature.
+    "posthog>=2.4.0,<6.0",
+    # Embeddings
+    "sentence-transformers>=3.0.0,<4.0",
+    "jupyter>=1.1.1",
+    "openai>=2.29.0",
+    "pydantic-ai>=1.61.0",
+    "streamlit>=1.55.0",
+    "exa-py>=2.10.2",
+    "pydantic-ai-slim[duckduckgo]>=1.61.0",
+    "logfire>=4.30.0",
 ]
 
 [dependency-groups]

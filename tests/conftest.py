@@ -5,8 +5,10 @@ Reference: SPEC-00, Section 7.
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
+import chromadb
 import pytest
 
 from src.config import Settings
@@ -95,3 +97,80 @@ def fixture_subpage_html() -> Path:
 def fixture_pdf() -> Path:
     """Path to the sample PDF fixture."""
     return FIXTURES_DIR / "sample_report.pdf"
+
+
+# --- ChromaDB fixtures (SPEC-02) ---
+
+AMR_TEST_CHUNKS = [
+    {
+        "id": "who-amr_chunk_0000",
+        "text": (
+            "Antimicrobial resistance (AMR) occurs when bacteria, viruses, "
+            "fungi and parasites change over time and no longer respond to "
+            "medicines. Antibiotics and other antimicrobial medicines become "
+            "ineffective and infections become difficult or impossible to treat."
+        ),
+        "metadata": {"source_id": "who-amr", "chunk_index": 0},
+    },
+    {
+        "id": "who-amr_chunk_0001",
+        "text": (
+            "Carbapenem-resistant Klebsiella pneumoniae (CRKP) is a major "
+            "threat. NDM-1 and KPC-2 are carbapenemase enzymes that confer "
+            "resistance to nearly all beta-lactam antibiotics."
+        ),
+        "metadata": {"source_id": "who-amr", "chunk_index": 1},
+    },
+    {
+        "id": "cdc-threats_chunk_0000",
+        "text": (
+            "CDC estimates that antibiotic-resistant bacteria cause at least "
+            "2.8 million infections and 35,000 deaths each year in the "
+            "United States. Drug-resistant infections are a growing concern."
+        ),
+        "metadata": {"source_id": "cdc-threats", "chunk_index": 0},
+    },
+    {
+        "id": "cdc-threats_chunk_0001",
+        "text": (
+            "Colistin is often considered the last-resort antibiotic for "
+            "multidrug-resistant Gram-negative infections. The minimum "
+            "inhibitory concentration (MIC) determines colistin effectiveness."
+        ),
+        "metadata": {"source_id": "cdc-threats", "chunk_index": 1},
+    },
+    {
+        "id": "fao-amr_chunk_0000",
+        "text": (
+            "Antimicrobial use in agriculture contributes to the emergence "
+            "of resistant organisms. One Health approaches integrate human, "
+            "animal, and environmental health to combat AMR globally."
+        ),
+        "metadata": {"source_id": "fao-amr", "chunk_index": 0},
+    },
+]
+
+
+@pytest.fixture
+def chroma_client():
+    """In-memory ChromaDB client for tests -- no disk I/O."""
+    return chromadb.Client()
+
+
+@pytest.fixture
+def chroma_collection(chroma_client):
+    """Empty ChromaDB collection for tests (unique name per test)."""
+    return chroma_client.create_collection(f"test_amr_{uuid.uuid4().hex[:8]}")
+
+
+@pytest.fixture
+def seeded_collection(chroma_client):
+    """ChromaDB collection pre-loaded with AMR test chunks."""
+    name = f"test_amr_seeded_{uuid.uuid4().hex[:8]}"
+    collection = chroma_client.create_collection(name)
+    collection.add(
+        ids=[c["id"] for c in AMR_TEST_CHUNKS],
+        documents=[c["text"] for c in AMR_TEST_CHUNKS],
+        metadatas=[c["metadata"] for c in AMR_TEST_CHUNKS],
+    )
+    return collection

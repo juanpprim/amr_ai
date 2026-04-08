@@ -28,6 +28,15 @@ uv run python scripts/download.py --source who-amr-topics
 
 # Download all sources
 uv run python scripts/download.py
+
+# Ingest markdown into ChromaDB
+uv run python scripts/ingest.py
+
+# Check collection stats
+uv run python scripts/ingest.py --stats
+
+# Run tests
+uv run pytest
 ```
 
 ## Project Structure
@@ -41,11 +50,16 @@ src/
     scraper.py           # Download logic
     converter.py         # Docling document-to-markdown
     downloader.py        # Pipeline orchestrator
+  rag/
+    ingestor.py          # Markdown chunking + ChromaDB ingestion
+    retriever.py         # Semantic retrieval from ChromaDB
 scripts/
   download.py            # CLI for downloading sources
+  ingest.py              # CLI for ChromaDB ingestion
 data/
   raw/                   # Downloaded PDFs/HTML
   markdown/              # Converted markdown files
+  chroma_db/             # ChromaDB persistent storage
 ```
 
 ## Data Sources

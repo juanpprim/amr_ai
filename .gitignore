@@ -23,5 +23,14 @@ htmlcov/
 # Scrapy
 .scrapy/
 
+# vscode
+.vscode/
+
 # OS
 .DS_Store
+
+# Notebooks data
+notebook/data/
+
+# Env variables
+.env

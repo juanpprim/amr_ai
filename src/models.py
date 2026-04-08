@@ -93,3 +93,55 @@ class DownloadResult(BaseModel):
     char_count: int = Field(
         default=0, description="Character count of converted markdown"
     )
+
+
+# --- RAG Models (SPEC-02) ---
+
+
+class RetrievedChunk(BaseModel):
+    """A single chunk retrieved from the vector store."""
+
+    chunk_id: str = Field(description="Unique chunk identifier in ChromaDB")
+    source_id: str = Field(description="Source this chunk belongs to")
+    text: str = Field(description="Chunk text content")
+    score: float = Field(
+        description="Cosine similarity score (semantic) or RRF score (hybrid)"
+    )
+    retrieval_method: Literal["hybrid", "semantic", "keyword"] = Field(
+        default="semantic",
+        description="Which retrieval method produced this result",
+    )
+    metadata: dict = Field(
+        default_factory=dict,
+        description="Chunk metadata from ChromaDB",
+    )
+
+
+class RetrievedContext(BaseModel):
+    """Result of a retrieval query -- multiple chunks with metadata."""
+
+    query: str = Field(description="Original user query")
+    chunks: list[RetrievedChunk] = Field(
+        default_factory=list,
+        description="Retrieved chunks sorted by relevance",
+    )
+    total_retrieved: int = Field(
+        default=0, description="Number of chunks returned"
+    )
+    sources_cited: list[str] = Field(
+        default_factory=list,
+        description="Unique source_ids in the result set",
+    )
+    retrieval_method_used: Literal["hybrid", "semantic", "keyword"] = Field(
+        default="semantic",
+        description="Retrieval strategy that was used",
+    )
+    has_sufficient_context: bool = Field(
+        default=False,
+        description=(
+            "True if top chunk score >= threshold. "
+            "Semantic threshold: 0.45 (cosine similarity). "
+            "Hybrid threshold: 0.011 (RRF score). "
+            "Signals agents to trigger web search when False."
+        ),
+    )
