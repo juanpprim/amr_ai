@@ -10,19 +10,18 @@ Changes from v2:
 
 from __future__ import annotations
 
-import logging
 import inspect
+import logging
 from dataclasses import dataclass, field
 from queue import Queue
 from threading import Thread
 from typing import Callable, Generator, Literal
 
-import logfire
 import chromadb
-from exa_py import Exa
+import logfire
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.messages import ModelMessage
 from pydantic_ai.common_tools.duckduckgo import duckduckgo_search_tool
+from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 
 from src.agents.models import (
     AnswerEvaluation,
@@ -34,9 +33,59 @@ from src.config import Settings
 from src.models import RetrievedContext
 from src.rag.retriever import retrieve
 
-
 settings = Settings()
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────
+# Streaming guard: reject only clearly off-topic chat
+# ─────────────────────────────────────────────
+
+_AMR_TOPIC_GATE_INSTRUCTIONS = """\
+You classify whether a user message belongs in an AMR (antimicrobial resistance)
+education tutor.
+
+Return True when the message is on-topic, including:
+- Antimicrobial resistance, antibiotics, antifungals, antivirals, prescribing,
+  stewardship, diagnostics, surveillance, infection prevention, One Health,
+  agriculture and food systems as they relate to antimicrobials.
+- Requests for quizzes, tests, flashcards, study cards, practice questions,
+  grading or feedback on answers, or other study activities in this tutor.
+- Pathogens and resistant organisms (e.g. bacteria, fungi, parasites, viruses,
+  ESKAPE, MRSA, CRE, outbreak strains) when the question concerns infection,
+  treatment, resistance mechanisms, typing, epidemiology, or clinical
+  microbiology relevant to antimicrobials.
+- Short follow-ups that continue learning (e.g. "yes", "next", "quiz me",
+  "harder", "explain", "flashcards") especially when recent context is about
+  AMR or study tasks.
+
+Return False only for clearly unrelated topics (weather, unrelated coding,
+generic politics with no health angle, etc.). When uncertain, return True so
+learners are not blocked."""
+
+_amr_topic_gate_agent = Agent(
+    "openai:gpt-4o",
+    output_type=bool,
+    instructions=_AMR_TOPIC_GATE_INSTRUCTIONS,
+)
+
+
+def _recent_user_lines_for_gate(
+    message_history: list[ModelMessage] | None,
+    max_turns: int = 4,
+) -> list[str]:
+    """Collect recent user prompt strings so short replies stay in scope."""
+    if not message_history:
+        return []
+    lines: list[str] = []
+    for msg in message_history:
+        if not isinstance(msg, ModelRequest):
+            continue
+        for part in msg.parts:
+            if not isinstance(part, UserPromptPart):
+                continue
+            content = part.content
+            lines.append(content if isinstance(content, str) else str(content))
+    return lines[-max_turns:]
 logfire_token = settings.logfire_api_key.strip() or None
 logfire.configure(token=logfire_token)
 logfire.instrument_pydantic_ai()
@@ -605,17 +654,25 @@ class AMROrchestrator:
             st.session_state.agent_history = meta.message_history
             if meta.panel: open_panel(meta.panel, meta.data)
         """
-        # Verify that message is about AMR as a guardrail
-        
-        check_amr = Agent(
-            "openai:gpt-4o",
-            output_type=bool,
-            instructions="Make sure that the message is about AMR. If it is not, return False. If it is, return True."
-        )
         stream_result = StreamResult()
-        result = check_amr.run_sync(f"Is the following message about AMR? {message}")
-        if not result.output:
-            stream_result.full_text = "The message is not about AMR. Please ask me about AMR."
+
+        recent = _recent_user_lines_for_gate(message_history)
+        gate_prompt_parts: list[str] = []
+        if recent:
+            gate_prompt_parts.append(
+                "Earlier user messages in this conversation (oldest first):\n"
+                + "\n---\n".join(recent)
+            )
+        gate_prompt_parts.append(f"Latest message to classify:\n{message}")
+        gate_prompt = "\n\n".join(gate_prompt_parts)
+
+        gate_result = _amr_topic_gate_agent.run_sync(gate_prompt)
+        if not gate_result.output:
+            stream_result.full_text = (
+                "That does not look related to antimicrobial resistance learning. "
+                "Ask about AMR, pathogens and resistance, or request a quiz or "
+                "flashcards."
+            )
             stream_result.message_history = message_history or []
 
             def non_amr_generator() -> Generator[StreamChunk, None, None]:
@@ -663,7 +720,9 @@ class AMROrchestrator:
                 stream_result.data = fallback.get("data")
                 stream_result.tool_events = fallback.get("tool_events", [])
                 if stream_result.full_text:
-                    stream_queue.put(StreamChunk(kind="text", text=stream_result.full_text))
+                    stream_queue.put(
+                        StreamChunk(kind="text", text=stream_result.full_text)
+                    )
             finally:
                 stream_queue.put(None)
 
