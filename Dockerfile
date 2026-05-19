@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-#
 # AMR Learning Agent — Hugging Face Spaces (Docker SDK) image.
 #
 # HF Spaces requirements addressed here:

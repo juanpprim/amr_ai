@@ -51,6 +51,14 @@ notebook = [
     "jupyter>=1.1.1",
 ]
 
+# Deployment tooling — used by scripts/deploy_hf.py to push code/data to the
+# HF Space via the Hub API (bypasses `git push hf` to avoid divergent-history
+# issues with the API-uploaded ChromaDB).
+#   uv sync --group deploy
+deploy = [
+    "huggingface_hub>=0.27,<1.0",
+]
+
 [tool.ruff]
 line-length = 88
 target-version = "py313"

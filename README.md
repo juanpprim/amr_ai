@@ -1,3 +1,13 @@
+---
+title: AMR Learning Agent
+emoji: 🧬
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # AMR Awareness Platform
 
 AI-powered educational platform for Antimicrobial Resistance (AMR) awareness.
