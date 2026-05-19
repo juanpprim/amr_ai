@@ -12,9 +12,11 @@
 #       -e LOGFIRE_API_KEY=... \
 #       amr-ai
 #
-FROM python:3.13-slim AS base
+# ---------------------------------------------------------------------------
+# Builder: compile chroma-hnswlib (no py3.13 wheel on PyPI yet)
+# ---------------------------------------------------------------------------
+FROM python:3.13-slim AS builder
 
-# Streamlit / Python runtime tweaks
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -22,16 +24,32 @@ ENV PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_NO_CACHE=1
 
-# Minimal system packages. We dropped scrapy/lxml/docling from the runtime
-# image, so we no longer need build-essential, libxml2-dev, etc. — only the
-# bits chromadb's onnxruntime and httpx actually need.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /usr/local/bin/uv
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync --frozen --no-dev --no-install-project
+
+# ---------------------------------------------------------------------------
+# Runtime image (HF Spaces)
+# ---------------------------------------------------------------------------
+FROM python:3.13-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Runtime-only system packages (scrapy/lxml/docling stay out of this image).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
     && rm -rf /var/lib/apt/lists/*
-
-# uv (single static binary, copied from the official image)
-COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /usr/local/bin/uv
 
 # ---------------------------------------------------------------------------
 # Non-root user (HF Spaces convention: uid 1000, $HOME writable)
@@ -43,18 +61,7 @@ ENV HOME=/home/user \
 
 WORKDIR /app
 
-# ---------------------------------------------------------------------------
-# Dependency install (cached layer — only re-runs when pyproject/lock change)
-# ---------------------------------------------------------------------------
-COPY --chown=user:user pyproject.toml uv.lock ./
-
-# Install ONLY the runtime deps:
-#   --frozen                : use the locked versions
-#   --no-dev                : skip pytest/ruff
-#   --no-install-project    : we don't need an editable install of "amr-ai"
-#   (pipeline + notebook groups are off by default in uv)
-RUN uv sync --frozen --no-dev --no-install-project \
-    && chown -R user:user /app
+COPY --from=builder --chown=user:user /app/.venv /app/.venv
 
 # ---------------------------------------------------------------------------
 # App source + (optional) prebuilt ChromaDB collection
