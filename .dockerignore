@@ -1,0 +1,52 @@
+# Keep the build context small — only what the Dockerfile actually COPYs.
+
+# VCS
+.git
+.gitignore
+.gitattributes
+gitattributes
+
+# Python
+.venv/
+**/__pycache__/
+*.py[oc]
+*.egg-info/
+build/
+dist/
+wheels/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Local secrets (HF Spaces injects them as env vars)
+.env
+.env.*
+!.env.example
+
+# Data NOT needed at runtime (only data/chroma_db is copied in the Dockerfile)
+data/raw/
+data/markdown/
+
+# Pipeline / notebook outputs
+notebook/
+scripts/
+tests/
+.scrapy/
+
+# Docs / misc not used by the app
+README.md
+CLAUDE.md
+.claude/
+.cursor/
+
+# Docker artefacts
+Dockerfile
+.dockerignore
