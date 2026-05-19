@@ -59,11 +59,27 @@ RUN uv sync --frozen --no-dev --no-install-project \
     && chown -R user:user /app
 
 # ---------------------------------------------------------------------------
-# App source + prebuilt ChromaDB collection
+# App source + (optional) prebuilt ChromaDB collection
+#
+# data/chroma_db/ is NOT committed to git. On HF Spaces it is uploaded out-of-
+# band via `huggingface-cli upload ... --repo-type=space`, so by the time the
+# Space builds the image the directory is present in the build context.
+#
+# Locally, the directory may or may not exist; we copy the whole data/ folder
+# (data/raw and data/markdown are excluded by .dockerignore) so the build
+# never fails on a missing chroma_db — the app falls back gracefully when
+# the collection is absent (see app.py / agents.py).
 # ---------------------------------------------------------------------------
 COPY --chown=user:user src/ ./src/
 COPY --chown=user:user app.py ./app.py
-COPY --chown=user:user data/chroma_db/ ./data/chroma_db/
+COPY --chown=user:user data/ ./data/
+
+# Surface in the build log whether the prebuilt index made it into the image.
+RUN if [ -f /app/data/chroma_db/chroma.sqlite3 ]; then \
+        echo "ChromaDB bundled: $(du -sh /app/data/chroma_db | cut -f1)"; \
+    else \
+        echo "WARNING: no ChromaDB in build context — search_knowledge_base tool will return 'unavailable' at runtime"; \
+    fi
 
 # Make the virtualenv the default Python and expose src/ for imports
 ENV VIRTUAL_ENV=/app/.venv \
