@@ -1,0 +1,30 @@
+# Fly.io deployment configuration for AMR Learning Agent
+#
+# Deploy:
+#   fly launch --copy-config --no-deploy
+#   fly secrets set OPENAI_API_KEY=... LOGFIRE_API_KEY=...
+#   fly deploy
+#
+# Free tier: 3 shared-cpu-1x VMs, 256MB RAM, 3GB persistent storage
+
+app = "amr-learning-agent"
+primary_region = "mad"  # Madrid — closest to user
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 7860
+  force_https = true
+  auto_stop_machines = "stop"      # scale to zero when idle
+  auto_start_machines = true       # wake on request
+  min_machines_running = 0         # allow full scale-down
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 50
+    soft_limit = 25
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

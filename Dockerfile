@@ -77,6 +77,7 @@ COPY --from=builder --chown=user:user /app/.venv /app/.venv
 # ---------------------------------------------------------------------------
 COPY --chown=user:user src/ ./src/
 COPY --chown=user:user app.py ./app.py
+COPY --chown=user:user robots.txt ./robots.txt
 COPY --chown=user:user data/ ./data/
 
 # Surface in the build log whether the prebuilt index made it into the image.

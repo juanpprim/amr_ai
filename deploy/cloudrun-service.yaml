@@ -1,0 +1,47 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: amr-learning-agent
+  labels:
+    cloud.googleapis.com/location: europe-west1
+  annotations:
+    # Prevent Google from indexing the Cloud Run URL
+    run.googleapis.com/launch-stage: BETA
+spec:
+  template:
+    metadata:
+      annotations:
+        # Scale to zero when idle — $0 cost
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "2"
+        # Allow up to 10 min for cold start (ChromaDB load)
+        run.googleapis.com/startup-cpu-boost: "true"
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 600
+      containers:
+        - image: IMAGE_PLACEHOLDER
+          ports:
+            - containerPort: 7860
+          resources:
+            limits:
+              memory: 2Gi
+              cpu: "1"
+          env:
+            - name: STREAMLIT_SERVER_PORT
+              value: "7860"
+          startupProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 7860
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 7860
+            periodSeconds: 30
+  traffic:
+    - percent: 100
+      latestRevision: true

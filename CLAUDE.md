@@ -4,32 +4,45 @@
 
 AI-powered Antimicrobial Resistance (AMR) education platform. Prototype built with PydanticAI agents, ChromaDB RAG, and Gradio UI. Full specs in Obsidian vault `AI/Prototype/Specs/`.
 
-**Current phase:** Data Collection (SPEC-01) -- downloading sources and converting to markdown.
+**Current phase:** Deployed -- Private HF Space (Docker SDK + Streamlit). All 6 specs implemented.
 
 ## Tech Stack
 
 - **Runtime:** Python 3.13 + uv
 - **Scraping:** Scrapy (HTML), httpx (APIs), Docling (PDF/HTML to markdown)
-- **Future:** PydanticAI, Claude claude-sonnet-4-6, ChromaDB, BioBERT embeddings, Gradio 5
+- **AI Agents:** PydanticAI, OpenAI GPT-4o, ChromaDB, BioBERT embeddings
+- **UI:** Streamlit (deployed as Docker SDK on HF Spaces, private)
+- **Observability:** Pydantic Logfire
 
 ## Project Structure
 
 ```
+app.py                       # Streamlit entry point
+Dockerfile                   # Multi-stage Docker build for HF Spaces
+robots.txt                   # Block search engine crawlers
 src/
-  config.py                # Settings model (pydantic-settings, loads .env)
-  models.py                # ALL Pydantic models -- single source of truth
+  config.py                  # Settings model (pydantic-settings, loads .env)
+  models.py                  # ALL Pydantic models -- single source of truth
   pipeline/
-    sources.py             # Phase 1 source registry (15 sources)
-    scraper.py             # Download logic (httpx for APIs/PDFs, Scrapy for HTML)
-    converter.py           # Docling document-to-markdown conversion
-    downloader.py          # Orchestrates download + conversion pipeline
+    sources.py               # Source registry (15 sources)
+    scraper.py               # Download logic (httpx for APIs/PDFs, Scrapy for HTML)
+    converter.py             # Docling document-to-markdown conversion
+    downloader.py            # Orchestrates download + conversion pipeline
+  rag/
+    ingestor.py              # Markdown chunking + ChromaDB ingestion
+    retriever.py             # Hybrid semantic + BM25 retrieval
+  agents/
+    agents.py                # PydanticAI orchestrator (streaming, tools)
+    models.py                # Agent-specific models (UserProfile, QuizSet, etc.)
 data/
-  raw/                     # Downloaded PDFs/HTML (gitignored)
-  markdown/                # Converted markdown files (gitignored)
+  raw/                       # Downloaded PDFs/HTML (gitignored)
+  markdown/                  # Converted markdown files (gitignored)
+  chroma_db/                 # ChromaDB persistent storage (gitignored)
 scripts/
-  download.py              # CLI: download and convert sources
+  download.py                # CLI: download and convert sources
+  ingest.py                  # CLI: ingest markdown into ChromaDB
 tests/
-  conftest.py              # Shared test fixtures
+  conftest.py                # Shared test fixtures
 ```
 
 ## Coding Conventions (from SPEC-00)
@@ -63,18 +76,22 @@ uv run python scripts/download.py --source X     # download single source
 uv run python scripts/download.py --force        # re-download existing
 uv run pytest                                    # run tests
 uv run ruff check src/ tests/                    # lint
+
+# Deploy
+uv run python scripts/deploy_hf.py              # deploy to HF Spaces
+./scripts/deploy_cloudrun.sh                     # deploy to Cloud Run
 ```
 
 ## Build Phases
 
 | Phase | Spec | Status |
 |-------|------|--------|
-| Data Collection | SPEC-01 | In progress |
-| RAG Pipeline | SPEC-02 | Pending |
-| AI Agents | SPEC-03 | Pending |
-| Flashcard & Judge | SPEC-04 | Pending |
-| Gradio UI | SPEC-05 | Pending |
-| Deployment | SPEC-06 | Pending |
+| Data Collection | SPEC-01 | Done |
+| RAG Pipeline | SPEC-02 | Done |
+| AI Agents | SPEC-03 | Done (OpenAI GPT-4o, not Claude) |
+| Flashcard & Judge | SPEC-04 | Done |
+| UI | SPEC-05 | Done (Streamlit, not Gradio) |
+| Deployment | SPEC-06 v2.0 | Done — Private HF Space, Docker SDK |
 
 ## AI Agent Instructions
 

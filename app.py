@@ -26,6 +26,14 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────
+# Prevent search-engine indexing (defense-in-depth)
+# ─────────────────────────────────────────────
+st.markdown(
+    '<meta name="robots" content="noindex, nofollow">',
+    unsafe_allow_html=True,
+)
+
+# ─────────────────────────────────────────────
 # CSS
 # ─────────────────────────────────────────────
 st.markdown("""
