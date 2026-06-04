@@ -1,3 +1,7 @@
+# WARNING: This YAML does not enforce authentication on its own.
+# You MUST deploy with --no-allow-unauthenticated (see scripts/deploy_cloudrun.sh)
+# or configure IAM manually. Without it, this service is PUBLIC on the internet
+# and your OpenAI API key is exposed to abuse.
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:

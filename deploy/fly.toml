@@ -1,8 +1,11 @@
 # Fly.io deployment configuration for AMR Learning Agent
 #
-# Deploy:
+# Uses nginx reverse proxy (auth + security headers) in front of Streamlit.
+#
+# Setup:
+#   cp deploy/fly.toml fly.toml
 #   fly launch --copy-config --no-deploy
-#   fly secrets set OPENAI_API_KEY=... LOGFIRE_API_KEY=...
+#   fly secrets set OPENAI_API_KEY=... LOGFIRE_API_KEY=... AMR_AUTH_PASSWORD=...
 #   fly deploy
 #
 # Free tier: 3 shared-cpu-1x VMs, 256MB RAM, 3GB persistent storage
@@ -11,19 +14,25 @@ app = "amr-learning-agent"
 primary_region = "mad"  # Madrid — closest to user
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "deploy/fly/Dockerfile.fly"
 
 [http_service]
-  internal_port = 7860
+  internal_port = 8080              # nginx (proxies to Streamlit on 7860)
   force_https = true
-  auto_stop_machines = "stop"      # scale to zero when idle
-  auto_start_machines = true       # wake on request
-  min_machines_running = 0         # allow full scale-down
+  auto_stop_machines = "stop"       # scale to zero when idle
+  auto_start_machines = true        # wake on request
+  min_machines_running = 0          # allow full scale-down
 
   [http_service.concurrency]
     type = "connections"
     hard_limit = 50
     soft_limit = 25
+
+# Persistent volume for ChromaDB (survives redeploys)
+# Create with: fly volumes create amr_data --size 1 --region mad
+[mounts]
+  source      = "amr_data"
+  destination = "/app/data/chroma_db"
 
 [[vm]]
   size = "shared-cpu-1x"
