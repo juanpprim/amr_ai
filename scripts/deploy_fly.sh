@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Deploy AMR Learning Agent to Fly.io with nginx auth proxy.
+# Deploy AMR Learning Agent to Fly.io.
+#
+# Same image as Railway: nginx + oauth2-proxy (Auth0 OIDC) + Streamlit,
+# with Chroma Cloud as the vector store.
 #
 # Prerequisites:
 #   1. Install flyctl: curl -L https://fly.io/install.sh | sh
-#   2. Authenticate: fly auth login
+#   2. Authenticate:   fly auth login
 #
 # First-time setup (run once):
 #   ./scripts/deploy_fly.sh --init
@@ -11,9 +14,14 @@
 # Subsequent deploys:
 #   ./scripts/deploy_fly.sh
 #
-# Set auth password:
+# Recommended auth (multi-user via Auth0):
+#   fly secrets set AUTH0_DOMAIN=... AUTH0_CLIENT_ID=... AUTH0_CLIENT_SECRET=...
+#   fly secrets set OAUTH2_PROXY_COOKIE_SECRET=$(openssl rand -base64 32)
+#   fly secrets set PUBLIC_HOSTNAME=amr-learning-agent.fly.dev
+#   fly secrets set OAUTH2_ALLOWED_EMAILS=a@x.com,b@y.com
+#
+# Single-user fallback:
 #   fly secrets set AMR_AUTH_PASSWORD=your-secure-password
-#   fly secrets set AMR_AUTH_USER=admin       # optional, default: admin
 
 set -euo pipefail
 
@@ -39,18 +47,32 @@ if [ "${1:-}" = "--init" ]; then
     fly launch --copy-config --no-deploy --yes
     echo ""
 
-    # Create persistent volume for ChromaDB
-    echo ">>> Creating persistent volume (1GB, Madrid)..."
-    fly volumes create amr_data --size 1 --region mad --yes || true
-    echo ""
+    # No persistent volume — vectors live in Chroma Cloud.
 
     # Prompt for secrets
-    echo ">>> Set your secrets:"
-    echo "  fly secrets set OPENAI_API_KEY=sk-..."
-    echo "  fly secrets set LOGFIRE_API_KEY=..."
-    echo "  fly secrets set AMR_AUTH_PASSWORD=your-secure-password"
-    echo ""
-    echo ">>> Then deploy with: ./scripts/deploy_fly.sh"
+    cat <<'EOF'
+>>> Set your secrets (Auth0 OIDC — recommended for multi-user):
+
+  fly secrets set \
+      OPENAI_API_KEY=sk-proj-... \
+      CHROMA_API_KEY=... \
+      CHROMA_TENANT=... \
+      CHROMA_DATABASE=... \
+      AUTH0_DOMAIN=yourtenant.eu.auth0.com \
+      AUTH0_CLIENT_ID=... \
+      AUTH0_CLIENT_SECRET=... \
+      OAUTH2_PROXY_COOKIE_SECRET="$(openssl rand -base64 32)" \
+      PUBLIC_HOSTNAME=amr-learning-agent.fly.dev \
+      OAUTH2_ALLOWED_EMAILS=a@x.com,b@y.com
+
+>>> Optional:
+  fly secrets set LOGFIRE_API_KEY=...
+
+>>> Single-user fallback (skip Auth0):
+  fly secrets set AMR_AUTH_PASSWORD=your-secure-password
+
+>>> Then deploy with: ./scripts/deploy_fly.sh
+EOF
     exit 0
 fi
 

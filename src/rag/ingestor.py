@@ -1,7 +1,7 @@
 """ChromaDB ingestion: chunk markdown files and store in vector DB.
 
-Handles text chunking with overlap and batch upsert into a persistent
-ChromaDB collection using the default embedding function (all-MiniLM-L6-v2).
+Handles text chunking with overlap and batch upsert into a Chroma Cloud
+collection using the default embedding function (all-MiniLM-L6-v2).
 
 Reference: SPEC-02, SPEC-00 Section 2.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -41,36 +42,41 @@ def _chunk_id(source_id: str, text: str) -> str:
 def get_or_create_collection(
     settings: Settings,
 ) -> chromadb.Collection:
-    """Create or open a persistent ChromaDB collection.
+    """Create or open a Chroma Cloud collection.
 
     Uses the default embedding function (all-MiniLM-L6-v2) which is
-    built into ChromaDB via sentence-transformers.
+    built into ChromaDB via sentence-transformers. Connects to Chroma
+    Cloud using credentials from environment variables.
+
+    Required env vars: CHROMA_API_KEY, CHROMA_TENANT, CHROMA_DATABASE.
 
     Args:
-        settings: Application settings with chroma_persist_dir and
-            chroma_collection_name.
+        settings: Application settings with chroma_collection_name.
 
     Returns:
         A ChromaDB Collection ready for upsert/query.
 
     Raises:
-        RuntimeError: If ChromaDB connection fails (per SPEC-00 rule 4).
+        RuntimeError: If Chroma Cloud connection fails (per SPEC-00 rule 4).
     """
     try:
-        persist_dir = str(settings.chroma_persist_dir)
-        client = chromadb.PersistentClient(path=persist_dir)
+        client = chromadb.CloudClient(
+            api_key=os.environ["CHROMA_API_KEY"],
+            tenant=os.environ["CHROMA_TENANT"],
+            database=os.environ["CHROMA_DATABASE"],
+        )
         collection = client.get_or_create_collection(
             name=settings.chroma_collection_name,
         )
         logger.info(
-            "ChromaDB collection '%s' ready (%d chunks)",
+            "Chroma Cloud collection '%s' ready (%d chunks)",
             settings.chroma_collection_name,
             collection.count(),
         )
         return collection
     except Exception as exc:
-        logger.error("ChromaDB connection failed: %s", exc, exc_info=True)
-        raise RuntimeError(f"ChromaDB connection failed: {exc}") from exc
+        logger.error("Chroma Cloud connection failed: %s", exc, exc_info=True)
+        raise RuntimeError(f"Chroma Cloud connection failed: {exc}") from exc
 
 
 def chunk_markdown(

@@ -1,6 +1,6 @@
 # Secrets
 .env
-deploy/fly/.htpasswd
+deploy/.htpasswd
 
 # Data
 data/raw/

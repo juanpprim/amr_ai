@@ -1,20 +1,27 @@
 # Fly.io deployment configuration for AMR Learning Agent
 #
-# Uses nginx reverse proxy (auth + security headers) in front of Streamlit.
+# Uses the same image as Railway: nginx + oauth2-proxy (Auth0 OIDC) + Streamlit,
+# with Chroma Cloud as the vector store (no persistent volume needed).
 #
 # Setup:
 #   cp deploy/fly.toml fly.toml
 #   fly launch --copy-config --no-deploy
-#   fly secrets set OPENAI_API_KEY=... LOGFIRE_API_KEY=... AMR_AUTH_PASSWORD=...
+#   fly secrets set \
+#       OPENAI_API_KEY=sk-proj-... \
+#       CHROMA_API_KEY=... CHROMA_TENANT=... CHROMA_DATABASE=... \
+#       AUTH0_DOMAIN=... AUTH0_CLIENT_ID=... AUTH0_CLIENT_SECRET=... \
+#       OAUTH2_PROXY_COOKIE_SECRET=$(openssl rand -base64 32) \
+#       PUBLIC_HOSTNAME=amr-learning-agent.fly.dev \
+#       OAUTH2_ALLOWED_EMAILS=a@x.com,b@y.com
 #   fly deploy
 #
-# Free tier: 3 shared-cpu-1x VMs, 256MB RAM, 3GB persistent storage
+# Single-user fallback (instead of Auth0): fly secrets set AMR_AUTH_PASSWORD=...
 
 app = "amr-learning-agent"
 primary_region = "mad"  # Madrid — closest to user
 
 [build]
-  dockerfile = "deploy/fly/Dockerfile.fly"
+  dockerfile = "deploy/Dockerfile"
 
 [http_service]
   internal_port = 8080              # nginx (proxies to Streamlit on 7860)
@@ -28,11 +35,7 @@ primary_region = "mad"  # Madrid — closest to user
     hard_limit = 50
     soft_limit = 25
 
-# Persistent volume for ChromaDB (survives redeploys)
-# Create with: fly volumes create amr_data --size 1 --region mad
-[mounts]
-  source      = "amr_data"
-  destination = "/app/data/chroma_db"
+# No persistent volume — vectors live in Chroma Cloud.
 
 [[vm]]
   size = "shared-cpu-1x"

@@ -1,17 +1,22 @@
-# AMR Learning Agent — Fly.io image with nginx reverse proxy + OAuth2 Proxy.
+# AMR Learning Agent — hardened image used by both Fly.io and Railway.
 #
-# Extends the base Dockerfile with:
+# Adds on top of the bare Streamlit container:
 #   - nginx for security headers, rate limiting, and WebSocket proxy
 #   - OAuth2 Proxy for Auth0 OIDC authentication (optional, auto-detected)
 #   - Basic auth fallback via htpasswd (when OAuth2 secrets not set)
 #   - entrypoint.sh to run nginx + (optionally) oauth2-proxy + Streamlit
 #
+# Platform configs live next to this file:
+#   - deploy/fly.toml              (Fly.io)
+#   - deploy/cloudrun-service.yaml (Cloud Run)
+#   - Railway: point service Build → Dockerfile at deploy/Dockerfile
+#
 # Build locally:
-#   docker build -f deploy/fly/Dockerfile.fly -t amr-ai-fly .
+#   docker build -f deploy/Dockerfile -t amr-ai .
 #   docker run --rm -p 8080:8080 \
 #       -e OPENAI_API_KEY=... \
 #       -e AMR_AUTH_PASSWORD=changeme \
-#       amr-ai-fly
+#       amr-ai
 #
 # ---------------------------------------------------------------------------
 # Builder: compile chroma-hnswlib (no py3.13 wheel on PyPI yet)
@@ -38,7 +43,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # ---------------------------------------------------------------------------
-# Runtime image (Fly.io — nginx + Streamlit)
+# Runtime image — nginx + (optional) oauth2-proxy + Streamlit
 # ---------------------------------------------------------------------------
 FROM python:3.13-slim AS runtime
 
@@ -67,7 +72,7 @@ RUN curl -fsSL "https://github.com/oauth2-proxy/oauth2-proxy/releases/download/$
 # ---------------------------------------------------------------------------
 # nginx configuration
 # ---------------------------------------------------------------------------
-COPY deploy/fly/nginx.conf /etc/nginx/nginx.conf
+COPY deploy/nginx.conf /etc/nginx/nginx.conf
 
 # Create writable dirs for nginx workers (drop from root to www-data)
 # and default auth.conf (entrypoint may override at runtime).
@@ -94,19 +99,11 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 
 # ---------------------------------------------------------------------------
-# App source + (optional) prebuilt ChromaDB collection
+# App source (vectors live in Chroma Cloud — no bundled DB)
 # ---------------------------------------------------------------------------
 COPY src/ ./src/
 COPY app.py ./app.py
 COPY robots.txt ./robots.txt
-COPY data/ ./data/
-
-# Surface in the build log whether the prebuilt index made it into the image.
-RUN if [ -f /app/data/chroma_db/chroma.sqlite3 ]; then \
-        echo "ChromaDB bundled: $(du -sh /app/data/chroma_db | cut -f1)"; \
-    else \
-        echo "WARNING: no ChromaDB in build context — search_knowledge_base tool will return 'unavailable' at runtime"; \
-    fi
 
 # Make the virtualenv the default Python and expose src/ for imports
 ENV VIRTUAL_ENV=/app/.venv \
@@ -124,7 +121,7 @@ ENV STREAMLIT_SERVER_PORT=7860 \
 # ---------------------------------------------------------------------------
 # Entrypoint: runs nginx + (optionally) OAuth2 Proxy + Streamlit
 # ---------------------------------------------------------------------------
-COPY deploy/fly/entrypoint.sh /app/entrypoint.sh
+COPY deploy/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Give app user ownership of the app directory

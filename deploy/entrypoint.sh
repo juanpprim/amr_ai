@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Entrypoint for Fly.io: runs nginx + (optionally) OAuth2 Proxy + Streamlit.
+# Entrypoint (Fly.io / Railway): runs nginx + (optionally) OAuth2 Proxy + Streamlit.
 #
 # Auth modes (auto-detected from environment):
 #   1. OAuth2 OIDC (Auth0): AUTH0_DOMAIN + AUTH0_CLIENT_ID + AUTH0_CLIENT_SECRET
@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-echo "=== AMR Learning Agent (Fly.io) ==="
+echo "=== AMR Learning Agent ==="
 echo "  nginx     → :8080 (public)"
 echo "  streamlit → :7860 (internal)"
 
