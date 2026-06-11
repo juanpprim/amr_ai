@@ -8,6 +8,7 @@ Reference: SPEC-00, Section 3.
 
 import logging
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings
 
@@ -24,7 +25,9 @@ class Settings(BaseSettings):
     data_raw_dir: Path = Path("./data/raw")
     data_markdown_dir: Path = Path("./data/markdown")
 
-    # ChromaDB
+    # ChromaDB — backend selection (cloud by default; flip with CHROMA_MODE=local)
+    chroma_mode: Literal["cloud", "local"] = "cloud"
+    # chroma_persist_dir is only used when chroma_mode == "local"
     chroma_persist_dir: Path = Path("./data/chroma_db")
     chroma_collection_name: str = "amr_knowledge_base"
 
