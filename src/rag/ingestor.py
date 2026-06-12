@@ -1,9 +1,8 @@
 """ChromaDB ingestion: chunk markdown files and store in vector DB.
 
-Handles text chunking with overlap and batch upsert into a ChromaDB
-collection (Chroma Cloud or local PersistentClient, selected via the
-``CHROMA_MODE`` setting) using the default embedding function
-(all-MiniLM-L6-v2).
+Cloud mode uses Chroma Cloud with Qwen dense + Splade sparse embeddings
+(configured via collection Schema). Local mode uses PersistentClient with
+the default MiniLM embedding function for offline dev and tests.
 
 Reference: SPEC-02, SPEC-00 Section 2.
 """
@@ -12,15 +11,22 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import re
 from pathlib import Path
 
 import chromadb
 
 from src.config import Settings
+from src.rag.chroma_client import create_chroma_client
+from src.rag.schema import build_hybrid_schema
 
 logger = logging.getLogger(__name__)
+
+# Chroma Cloud document size limit (16 KiB per record).
+MAX_DOCUMENT_BYTES = 16 * 1024
+
+# Batch size for upsert operations to Chroma Cloud.
+UPSERT_BATCH_SIZE = 100
 
 
 def _normalize_chunk_text(text: str) -> str:
@@ -34,11 +40,24 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
 
 
-def _chunk_id(source_id: str, text: str) -> str:
-    """Build a deterministic per-source chunk ID from normalized text."""
-    normalized_text = _normalize_chunk_text(text)
-    payload = f"{source_id}|{normalized_text}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+def _chunk_id(source_id: str, chunk_index: int) -> str:
+    """Build a deterministic chunk ID from source and index."""
+    return f"{source_id}_chunk_{chunk_index:04d}"
+
+
+def _truncate_to_byte_limit(text: str, max_bytes: int = MAX_DOCUMENT_BYTES) -> str:
+    """Truncate text to fit within Chroma's per-document byte limit."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    truncated = encoded[:max_bytes]
+    # Avoid splitting a multi-byte UTF-8 character.
+    while truncated:
+        try:
+            return truncated.decode("utf-8")
+        except UnicodeDecodeError:
+            truncated = truncated[:-1]
+    return ""
 
 
 def get_or_create_collection(
@@ -46,15 +65,9 @@ def get_or_create_collection(
 ) -> chromadb.Collection:
     """Create or open a ChromaDB collection (Chroma Cloud or local).
 
-    Backend is selected by ``settings.chroma_mode``:
-
-    - ``"cloud"`` (default): connects to Chroma Cloud using
-      ``CHROMA_API_KEY`` / ``CHROMA_TENANT`` / ``CHROMA_DATABASE``.
-    - ``"local"``: opens a ``PersistentClient`` at
-      ``settings.chroma_persist_dir``.
-
-    Both modes use the default embedding function (all-MiniLM-L6-v2),
-    so collections are interchangeable.
+    Cloud collections are created with a hybrid Schema (Qwen dense + Splade
+    sparse). Local collections use the default embedding function so tests
+    can run offline.
 
     Args:
         settings: Application settings.
@@ -66,20 +79,20 @@ def get_or_create_collection(
         RuntimeError: If the backend connection fails (per SPEC-00 rule 4).
     """
     try:
+        client = create_chroma_client(settings)
+
         if settings.chroma_mode == "cloud":
-            client: chromadb.ClientAPI = chromadb.CloudClient(
-                api_key=os.environ["CHROMA_API_KEY"],
-                tenant=os.environ["CHROMA_TENANT"],
-                database=os.environ["CHROMA_DATABASE"],
+            collection = client.get_or_create_collection(
+                name=settings.chroma_collection_name,
+                schema=build_hybrid_schema(),
             )
-            backend = "Chroma Cloud"
+            backend = f"Chroma Cloud ({settings.chroma_host})"
         else:
-            client = chromadb.PersistentClient(path=str(settings.chroma_persist_dir))
+            collection = client.get_or_create_collection(
+                name=settings.chroma_collection_name,
+            )
             backend = f"local ({settings.chroma_persist_dir})"
 
-        collection = client.get_or_create_collection(
-            name=settings.chroma_collection_name,
-        )
         logger.info(
             "%s collection '%s' ready (%d chunks)",
             backend,
@@ -105,10 +118,11 @@ def chunk_markdown(
     chunk_size: int = 800,
     chunk_overlap: int = 100,
 ) -> list[dict]:
-    """Split markdown text into overlapping chunks with metadata.
+    """Split markdown text into overlapping line-based chunks with metadata.
 
-    Splits on paragraph boundaries (double newlines) when possible,
-    falling back to character-level splitting.
+    Line-based chunking is the recommended starting point for Chroma Cloud.
+    Each chunk includes ``source_id`` and ``chunk_index`` metadata for
+    GroupBy deduplication at query time. Chunks are capped at 16 KiB.
 
     Args:
         text: Full markdown text to chunk.
@@ -122,51 +136,24 @@ def chunk_markdown(
     if not text or not text.strip():
         return []
 
-    paragraphs = text.split("\n\n")
+    lines = text.splitlines()
     chunks: list[dict] = []
-    current_chunk = ""
+    current_lines: list[str] = []
+    current_len = 0
     chunk_index = 0
 
-    for paragraph in paragraphs:
-        paragraph = paragraph.strip()
-        if not paragraph:
-            continue
-
-        candidate = (
-            f"{current_chunk}\n\n{paragraph}" if current_chunk else paragraph
-        )
-
-        if len(candidate) > chunk_size and current_chunk:
-            # Flush current chunk
-            chunk_text = current_chunk.strip()
-            chunks.append(
-                {
-                    "id": _chunk_id(source_id, chunk_text),
-                    "text": chunk_text,
-                    "metadata": {
-                        "source_id": source_id,
-                        "chunk_index": chunk_index,
-                        "content_hash": _content_hash(chunk_text),
-                    },
-                }
-            )
-            chunk_index += 1
-
-            # Start new chunk with overlap from end of previous
-            if chunk_overlap:
-                overlap_text = current_chunk[-chunk_overlap:]
-                current_chunk = f"{overlap_text}\n\n{paragraph}"
-            else:
-                current_chunk = paragraph
-        else:
-            current_chunk = candidate
-
-    # Flush remaining text
-    if current_chunk.strip():
-        chunk_text = current_chunk.strip()
+    def flush_chunk() -> None:
+        nonlocal chunk_index, current_lines, current_len
+        if not current_lines:
+            return
+        chunk_text = _truncate_to_byte_limit("\n".join(current_lines).strip())
+        if not chunk_text:
+            current_lines = []
+            current_len = 0
+            return
         chunks.append(
             {
-                "id": _chunk_id(source_id, chunk_text),
+                "id": _chunk_id(source_id, chunk_index),
                 "text": chunk_text,
                 "metadata": {
                     "source_id": source_id,
@@ -175,15 +162,48 @@ def chunk_markdown(
                 },
             }
         )
+        chunk_index += 1
+        if chunk_overlap and chunk_text:
+            overlap_text = chunk_text[-chunk_overlap:]
+            current_lines = [overlap_text] if overlap_text.strip() else []
+            current_len = len(overlap_text)
+        else:
+            current_lines = []
+            current_len = 0
 
-    # Remove exact duplicate chunks produced from repeated content.
+    for line in lines:
+        line = line.rstrip()
+        if not line and not current_lines:
+            continue
+
+        candidate_len = current_len + len(line) + (1 if current_lines else 0)
+        if current_lines and candidate_len > chunk_size:
+            flush_chunk()
+
+        current_lines.append(line)
+        current_len = len("\n".join(current_lines))
+
+        if len(current_lines[-1].encode("utf-8")) > MAX_DOCUMENT_BYTES:
+            long_line = current_lines.pop()
+            current_len = len("\n".join(current_lines)) if current_lines else 0
+            if current_lines:
+                flush_chunk()
+            split_line = _truncate_to_byte_limit(long_line)
+            if split_line:
+                current_lines = [split_line]
+                current_len = len(split_line)
+                flush_chunk()
+
+    if current_lines:
+        flush_chunk()
+
     deduped_chunks: list[dict] = []
     seen_ids: set[str] = set()
     for chunk in chunks:
-        chunk_id = str(chunk["id"])
-        if chunk_id in seen_ids:
+        cid = str(chunk["id"])
+        if cid in seen_ids:
             continue
-        seen_ids.add(chunk_id)
+        seen_ids.add(cid)
         deduped_chunks.append(chunk)
 
     if len(deduped_chunks) != len(chunks):
@@ -201,6 +221,20 @@ def chunk_markdown(
         len(text),
     )
     return deduped_chunks
+
+
+def _upsert_batches(
+    collection: chromadb.Collection,
+    chunks: list[dict],
+) -> None:
+    """Upsert chunks in batches to stay within API payload limits."""
+    for start in range(0, len(chunks), UPSERT_BATCH_SIZE):
+        batch = chunks[start : start + UPSERT_BATCH_SIZE]
+        collection.upsert(
+            ids=[c["id"] for c in batch],
+            documents=[c["text"] for c in batch],
+            metadatas=[c["metadata"] for c in batch],
+        )
 
 
 def ingest_markdown_file(
@@ -235,16 +269,8 @@ def ingest_markdown_file(
         logger.warning("No chunks produced from %s", file_path)
         return 0
 
-    # Remove existing chunks for this source to avoid stale records when
-    # chunk boundaries change between runs.
     collection.delete(where={"source_id": source_id})
-
-    # Batch upsert into ChromaDB
-    collection.upsert(
-        ids=[c["id"] for c in chunks],
-        documents=[c["text"] for c in chunks],
-        metadatas=[c["metadata"] for c in chunks],
-    )
+    _upsert_batches(collection, chunks)
 
     logger.info(
         "Ingested %s: %d chunks",
@@ -256,11 +282,13 @@ def ingest_markdown_file(
 
 def ingest_markdown_files(
     settings: Settings,
-    source_id: str) -> int:
+    source_id: str | None = None,
+) -> int:
     """Walk data/markdown/ and ingest all .md files into ChromaDB.
 
     Args:
         settings: Application settings.
+        source_id: Optional filter — ingest only files whose stem contains this.
 
     Returns:
         Total number of chunks ingested across all files.

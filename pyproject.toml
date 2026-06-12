@@ -15,9 +15,9 @@ dependencies = [
     "python-dotenv>=1.0",
     # UI
     "streamlit>=1.55.0",
-    # Vector DB (uses bundled ONNX MiniLM-L6-v2 for embeddings;
-    # no sentence-transformers / torch needed at runtime)
-    "chromadb>=0.5.0,<1.0",
+    # Vector DB — Chroma Cloud hybrid search (Qwen + Splade) in production;
+    # local PersistentClient uses bundled MiniLM for offline dev/tests
+    "chromadb>=1.5.0",
     # Chroma 0.6.x still calls the pre-v6 posthog capture signature.
     "posthog>=2.4.0,<6.0",
     # Agents: slim build with only the providers/tools we actually use

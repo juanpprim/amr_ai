@@ -544,6 +544,7 @@ def search_knowledge_base(
         collection=collection,
         top_k=top_k,
         expertise_level=None, # TODO: no expertise level save in chromadb yet
+        settings=ctx.deps.settings,
     )
 
     formatted = _format_retrieved_context(result)

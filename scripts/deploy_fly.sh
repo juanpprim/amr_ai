@@ -55,6 +55,7 @@ if [ "${1:-}" = "--init" ]; then
 
   fly secrets set \
       OPENAI_API_KEY=sk-proj-... \
+      CHROMA_HOST=europe-west1.gcp.trychroma.com \
       CHROMA_API_KEY=... \
       CHROMA_TENANT=... \
       CHROMA_DATABASE=... \

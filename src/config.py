@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # chroma_persist_dir is only used when chroma_mode == "local"
     chroma_persist_dir: Path = Path("./data/chroma_db")
     chroma_collection_name: str = "amr_knowledge_base"
+    # Chroma Cloud (required when chroma_mode == "cloud")
+    chroma_host: str = "api.trychroma.com"
+    chroma_api_key: str = ""
+    chroma_tenant: str = ""
+    chroma_database: str = ""
 
     # RAG
     rag_top_k: int = 5

@@ -128,12 +128,33 @@ uv run python scripts/ingest.py
 | Variable | Source |
 |---|---|
 | `OPENAI_API_KEY` | OpenAI project key (`sk-proj-…`) |
-| `CHROMA_API_KEY` / `CHROMA_TENANT` / `CHROMA_DATABASE` | Chroma Cloud |
+| `CHROMA_MODE` | optional — `cloud` (default) or `local` |
+| `CHROMA_API_KEY` / `CHROMA_TENANT` / `CHROMA_DATABASE` | Chroma Cloud (required when `CHROMA_MODE=cloud`) |
 | `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET` | Auth0 app |
 | `OAUTH2_PROXY_COOKIE_SECRET` | `openssl rand -base64 32` |
 | `PUBLIC_HOSTNAME` | the public hostname, no `https://` prefix |
 | `OAUTH2_ALLOWED_EMAILS` | **required** — comma-separated allowlist |
 | `LOGFIRE_API_KEY` | optional, for observability |
+
+### Local vs cloud ChromaDB
+
+`CHROMA_MODE` controls the vector-store backend for both ingestion and
+retrieval:
+
+- `cloud` (default) — `chromadb.CloudClient` with the `CHROMA_*` env vars
+  above. This is what Railway and Fly.io should run.
+- `local` — `chromadb.PersistentClient` at `chroma_persist_dir`
+  (default `./data/chroma_db`). Useful for offline development and tests.
+
+Flip it on the fly without editing `.env`:
+
+```bash
+# Ingest into the local DB
+CHROMA_MODE=local uv run python scripts/ingest.py
+
+# Run the app against the local DB
+CHROMA_MODE=local uv run streamlit run app.py
+```
 
 ### Railway
 
