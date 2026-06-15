@@ -1,0 +1,26 @@
+# fly.toml app configuration file generated for amr-learning-agent-rosy-shell-5005 on 2026-06-12T18:07:41+02:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'amr-learning-agent'
+primary_region = 'cdg'
+
+[build]
+  dockerfile = 'deploy/Dockerfile'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = 'connections'
+    hard_limit = 50
+    soft_limit = 25
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'

@@ -66,8 +66,7 @@ if [ "${1:-}" = "--init" ]; then
       PUBLIC_HOSTNAME=amr-learning-agent.fly.dev \
       OAUTH2_ALLOWED_EMAILS=a@x.com,b@y.com
 
->>> Optional:
-  fly secrets set LOGFIRE_API_KEY=...
+ 
 
 >>> Single-user fallback (skip Auth0):
   fly secrets set AMR_AUTH_PASSWORD=your-secure-password

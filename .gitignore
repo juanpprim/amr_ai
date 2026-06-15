@@ -35,3 +35,6 @@ notebook/data/
 
 # Env variables
 .env
+.ruff_cache/
+.claude/
+.cursor/

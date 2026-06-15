@@ -73,6 +73,8 @@ RUN curl -fsSL "https://github.com/oauth2-proxy/oauth2-proxy/releases/download/$
 # nginx configuration
 # ---------------------------------------------------------------------------
 COPY deploy/nginx.conf /etc/nginx/nginx.conf
+COPY deploy/loading.html /usr/share/nginx/html/loading.html
+COPY deploy/pending-approval.html /usr/share/nginx/html/pending-approval.html
 
 # Create writable dirs for nginx workers (drop from root to www-data)
 # and default auth.conf (entrypoint may override at runtime).

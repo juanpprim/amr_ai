@@ -93,11 +93,15 @@ if [ "$AUTH_MODE" = "oauth2" ]; then
         echo "  allowlist → ${USERS} emails"
     fi
 
-    # Email domain restriction (if provided)
-    DOMAIN_FLAG="--email-domains=*"
-    if [ -n "${OAUTH2_EMAIL_DOMAIN:-}" ]; then
-        DOMAIN_FLAG="--email-domains=${OAUTH2_EMAIL_DOMAIN}"
-        echo "  domains   → ${OAUTH2_EMAIL_DOMAIN}"
+    # Email domain restriction (if provided). Skip when using an allowlist file —
+    # oauth2-proxy requires either --email-domain or --authenticated-emails-file.
+    DOMAIN_FLAG=""
+    if [ -z "${OAUTH2_ALLOWED_EMAILS:-}" ]; then
+        DOMAIN_FLAG="--email-domain=*"
+        if [ -n "${OAUTH2_EMAIL_DOMAIN:-}" ]; then
+            DOMAIN_FLAG="--email-domain=${OAUTH2_EMAIL_DOMAIN}"
+            echo "  domains   → ${OAUTH2_EMAIL_DOMAIN}"
+        fi
     fi
 
     # Generate nginx auth.conf for OAuth2 mode
@@ -105,7 +109,7 @@ if [ "$AUTH_MODE" = "oauth2" ]; then
 auth_request /oauth2/auth;
 auth_request_set $auth_user $upstream_http_x_auth_request_user;
 auth_request_set $auth_email $upstream_http_x_auth_request_email;
-error_page 401 = /oauth2/start?rd=$scheme://$host$request_uri;
+error_page 401 = @oauth2_signin;
 AUTHCONF
 
     # Start oauth2-proxy
@@ -122,6 +126,8 @@ AUTHCONF
         --cookie-samesite=lax \
         --http-address=127.0.0.1:4180 \
         --reverse-proxy=true \
+        --insecure-oidc-allow-unverified-email=true \
+        --whitelist-domain="${PUBLIC_HOSTNAME}" \
         --pass-user-headers=true \
         --set-xauthrequest=true \
         --request-logging=true \
